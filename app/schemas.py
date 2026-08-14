@@ -258,3 +258,22 @@ class AdminOverview(BaseModel):
     usage_today: AdminUsageSummary
     series: list[AdminDailyPoint]
     recent: list[AdminUsageEvent]
+
+
+class RefSiteOut(BaseModel):
+    id: str
+    label: str
+    blurb: str
+    url: str
+
+
+class RefSiteGroupOut(BaseModel):
+    id: str
+    label: str
+    match: list[str]
+    sites: list[RefSiteOut]
+
+
+class RefSiteCatalogOut(BaseModel):
+    groups: list[RefSiteGroupOut]
+    mega_map: dict[str, list[str]]

@@ -1,20 +1,24 @@
-"""Live source gatherers (RSS / YouTube channel feeds / fetch).
+"""Live source gatherers (RSS / YouTube / public HTML lists).
 
-These mirror the *capabilities* of rss-reader-mcp + youtube-mcp + fetch MCP,
-but run inside FastAPI as plain Python — MCP servers stay for Cursor agents,
-not for the scheduled digest worker.
+Prefer native RSS/Atom. When a site has no usable feed (or the feed fails),
+fall back to polite public listing/search HTML parsing — no login, no CAPTCHA
+bypass, no anti-bot evasion. Soft-fail on 403/timeouts.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from urllib.parse import quote_plus
+from html.parser import HTMLParser
+from urllib.parse import quote_plus, urljoin, urlparse
 
 import feedparser
 import httpx
 
-USER_AGENT = "Oday3Bot/1.0 (+https://localhost; personal digest)"
+USER_AGENT = (
+    "Oday3Bot/1.0 (+https://localhost; personal study digest; "
+    "contact=local-dev)"
+)
 
 
 @dataclass
@@ -26,9 +30,22 @@ class SourceItem:
     source: str
 
 
+@dataclass(frozen=True)
+class HtmlListSpec:
+    """Public HTML list/search page → link extraction."""
+
+    kind: str
+    source: str
+    # Absolute URL, or template with {q} for topic query
+    url: str
+    # Keep only href matching this (search against absolute or path)
+    href_re: str
+    base: str
+    limit: int = 6
+
+
 # YouTube channel IDs (public RSS, no API key)
 _YT_CHANNELS: dict[str, tuple[str, str]] = {
-    # label -> (channel_id, topic_hint)
     "삼프로TV": ("UChlgI3UHCOnwUGzWzbJEuYw", "주식"),
     "슈카월드": ("UCsJ6RuBiTVWRX1041hfhWYA", "경제"),
     "지식인사이드": ("UCGX5sP4ehPfCPU1yGT1JT3w", "라이프"),
@@ -36,7 +53,6 @@ _YT_CHANNELS: dict[str, tuple[str, str]] = {
 
 # Static RSS catalogs keyed by topic fragment match
 _RSS_CATALOG: list[tuple[str, str, str, str]] = [
-    # (kind, source_name, topic_hint, url)
     ("아티클", "Google News KR 주식", "주식", "https://news.google.com/rss/search?q=%ED%95%9C%EA%B5%AD+%EC%A3%BC%EC%8B%9D&hl=ko&gl=KR&ceid=KR:ko"),
     ("아티클", "Google News US markets", "미국증시", "https://news.google.com/rss/search?q=US+stock+market&hl=en-US&gl=US&ceid=US:en"),
     ("아티클", "Google News 반도체", "반도체", "https://news.google.com/rss/search?q=%EB%B0%98%EB%8F%84%EC%B2%B4&hl=ko&gl=KR&ceid=KR:ko"),
@@ -46,6 +62,7 @@ _RSS_CATALOG: list[tuple[str, str, str, str]] = [
     ("커뮤니티", "HN Frontpage", "IT", "https://hnrss.org/frontpage"),
     ("커뮤니티", "r/stocks", "주식", "https://www.reddit.com/r/stocks/.rss"),
     ("커뮤니티", "r/investing", "미국증시", "https://www.reddit.com/r/investing/.rss"),
+    ("커뮤니티", "r/algotrading", "퀀트", "https://www.reddit.com/r/algotrading/.rss"),
     ("커뮤니티", "r/korea", "뉴스", "https://www.reddit.com/r/korea/.rss"),
 ]
 
@@ -60,8 +77,14 @@ def _topic_blob(topics: list[str]) -> str:
     return " ".join(topics).lower()
 
 
+def _primary_query(topics: list[str]) -> str:
+    if not topics:
+        return "technology"
+    q = topics[0].split("/")[-1].strip()
+    return q if q and q != "all" else "technology"
+
+
 def _feeds_for_topics(topics: list[str]) -> list[tuple[str, str, str]]:
-    """Return (kind, source_name, url) list biased by user topics."""
     blob = _topic_blob(topics)
     picked: list[tuple[str, str, str]] = []
 
@@ -69,26 +92,22 @@ def _feeds_for_topics(topics: list[str]) -> list[tuple[str, str, str]]:
         if not topics or hint.lower() in blob or any(hint.lower() in t.lower() for t in topics):
             picked.append((kind, name, url))
 
-    # Always include at least one KR + one US market feed when stock-related
     if any(x in blob for x in ("주식", "증시", "경제", "etf", "반도체")):
         for kind, name, hint, url in _RSS_CATALOG:
             if hint in ("주식", "미국증시") and (kind, name, url) not in picked:
                 picked.append((kind, name, url))
 
     if not picked:
-        # default mix
         picked = [(k, n, u) for k, n, _, u in _RSS_CATALOG[:4]]
 
-    # Dynamic Google News query from first topic label
     if topics:
-        q = topics[0].split("/")[-1]
-        if q and q != "all":
-            gurl = (
-                "https://news.google.com/rss/search?q="
-                + quote_plus(q)
-                + "&hl=ko&gl=KR&ceid=KR:ko"
-            )
-            picked.insert(0, ("아티클", f"Google News · {q}", gurl))
+        q = _primary_query(topics)
+        gurl = (
+            "https://news.google.com/rss/search?q="
+            + quote_plus(q)
+            + "&hl=ko&gl=KR&ceid=KR:ko"
+        )
+        picked.insert(0, ("아티클", f"Google News · {q}", gurl))
 
     return picked[:8]
 
@@ -101,19 +120,33 @@ def _youtube_feeds_for_topics(topics: list[str]) -> list[tuple[str, str, str]]:
             url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
             out.append(("유튜브", label, url))
     if not out:
-        # fallback one channel
         label, (channel_id, _) = next(iter(_YT_CHANNELS.items()))
         out.append(("유튜브", label, f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"))
     return out
 
 
-def _parse_feed(kind: str, source: str, url: str, *, limit: int = 5) -> list[SourceItem]:
+def _http_get(url: str, *, timeout: float = 12.0) -> str | None:
     try:
-        with httpx.Client(timeout=12.0, follow_redirects=True, headers={"User-Agent": USER_AGENT}) as client:
+        with httpx.Client(
+            timeout=timeout,
+            follow_redirects=True,
+            headers={
+                "User-Agent": USER_AGENT,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
+            },
+        ) as client:
             resp = client.get(url)
-            resp.raise_for_status()
-            raw = resp.text
+            if resp.status_code >= 400:
+                return None
+            return resp.text
     except Exception:
+        return None
+
+
+def _parse_feed(kind: str, source: str, url: str, *, limit: int = 5) -> list[SourceItem]:
+    raw = _http_get(url)
+    if not raw:
         return []
 
     parsed = feedparser.parse(raw)
@@ -130,7 +163,106 @@ def _parse_feed(kind: str, source: str, url: str, *, limit: int = 5) -> list[Sou
     return items
 
 
-# User-selected reference site id → RSS/Atom feeds (prefer native feeds over News proxies)
+class _AnchorCollector(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.links: list[tuple[str, str]] = []
+        self._href: str | None = None
+        self._parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() != "a":
+            return
+        href = dict(attrs).get("href")
+        if href:
+            self._href = href
+            self._parts = []
+
+    def handle_data(self, data: str) -> None:
+        if self._href is not None:
+            self._parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() != "a" or self._href is None:
+            return
+        title = _clean("".join(self._parts), 140)
+        self.links.append((self._href, title))
+        self._href = None
+        self._parts = []
+
+
+def _parse_html_list(spec: HtmlListSpec, *, query: str = "") -> list[SourceItem]:
+    url = spec.url.replace("{q}", quote_plus(query or "technology"))
+    raw = _http_get(url)
+    if not raw:
+        return []
+
+    parser = _AnchorCollector()
+    try:
+        parser.feed(raw)
+    except Exception:
+        return []
+
+    href_re = re.compile(spec.href_re, re.I)
+    seen: set[str] = set()
+    items: list[SourceItem] = []
+    for href, title in parser.links:
+        abs_url = urljoin(spec.base, href)
+        path = urlparse(abs_url).path
+        if not href_re.search(abs_url) and not href_re.search(path):
+            continue
+        if abs_url in seen:
+            continue
+        if not title or len(title) < 3:
+            continue
+        # skip nav noise
+        if title.lower() in {"sign in", "sign up", "login", "home", "about", "more"}:
+            continue
+        # GitHub non-repo first segments (topics/search/…)
+        if "github.com" in abs_url:
+            segs = [s for s in path.split("/") if s]
+            if len(segs) >= 1 and segs[0].lower() in {
+                "topics",
+                "search",
+                "settings",
+                "orgs",
+                "users",
+                "explore",
+                "marketplace",
+                "login",
+                "signup",
+                "about",
+                "features",
+                "pricing",
+                "enterprise",
+                "collections",
+                "sponsors",
+                "codespaces",
+                "notifications",
+                "pulls",
+                "issues",
+                "new",
+                "account",
+            }:
+                continue
+            if len(segs) != 2:
+                continue
+        seen.add(abs_url)
+        items.append(
+            SourceItem(
+                kind=spec.kind,
+                title=title,
+                url=abs_url,
+                summary=f"{spec.source} 목록에서 수집",
+                source=spec.source,
+            )
+        )
+        if len(items) >= spec.limit:
+            break
+    return items
+
+
+# User-selected reference site id → RSS/Atom feeds
 _SITE_FEEDS: dict[str, list[tuple[str, str, str]]] = {
     "naver-finance": [
         (
@@ -172,6 +304,10 @@ _SITE_FEEDS: dict[str, list[tuple[str, str, str]]] = {
         ("아티클", "Bloomberg markets", "https://feeds.bloomberg.com/markets/news.rss"),
         ("아티클", "Bloomberg Google", "https://news.google.com/rss/search?q=site:bloomberg.com+markets&hl=en-US&gl=US&ceid=US:en"),
     ],
+    "reuters": [
+        ("아티클", "Reuters business", "https://news.google.com/rss/search?q=site:reuters.com+business+OR+markets&hl=en-US&gl=US&ceid=US:en"),
+        ("아티클", "Reuters world", "https://news.google.com/rss/search?q=site:reuters.com&hl=en-US&gl=US&ceid=US:en"),
+    ],
     "cnbc": [
         ("아티클", "CNBC top news", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"),
         ("아티클", "CNBC world", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100727362"),
@@ -184,13 +320,80 @@ _SITE_FEEDS: dict[str, list[tuple[str, str, str]]] = {
         ("아티클", "Seeking Alpha", "https://seekingalpha.com/market_currents.xml"),
         ("아티클", "Seeking Alpha news", "https://seekingalpha.com/feed.xml"),
     ],
+    "coindesk": [
+        ("아티클", "CoinDesk", "https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml"),
+        ("아티클", "CoinDesk Google", "https://news.google.com/rss/search?q=site:coindesk.com&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "cointelegraph": [
+        ("아티클", "CoinTelegraph", "https://cointelegraph.com/rss"),
+        ("아티클", "CoinTelegraph Google", "https://news.google.com/rss/search?q=site:cointelegraph.com&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "the-block": [
+        ("아티클", "The Block", "https://www.theblock.co/rss.xml"),
+        ("아티클", "The Block Google", "https://news.google.com/rss/search?q=site:theblock.co&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "quantstart": [
+        ("아티클", "QuantStart", "https://www.quantstart.com/articles/rss"),
+        ("아티클", "QuantStart Google", "https://news.google.com/rss/search?q=site:quantstart.com+algorithmic+trading&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "reddit-algotrading": [
+        ("커뮤니티", "r/algotrading", "https://www.reddit.com/r/algotrading/.rss"),
+    ],
     "hn": [
         ("커뮤니티", "Hacker News", "https://hnrss.org/frontpage"),
         ("커뮤니티", "HN best", "https://hnrss.org/best"),
     ],
+    "lobsters": [
+        ("커뮤니티", "Lobsters", "https://lobste.rs/rss"),
+        ("커뮤니티", "Lobsters hottest", "https://lobste.rs/hottest.rss"),
+    ],
     "github-trending": [
         ("아티클", "GitHub Blog", "https://github.blog/feed/"),
-        ("커뮤니티", "r/github", "https://www.reddit.com/r/github/.rss"),
+    ],
+    "stackoverflow": [
+        ("커뮤니티", "SO python", "https://stackoverflow.com/feeds/tag?tagnames=python&sort=newest"),
+        ("커뮤니티", "SO fastapi", "https://stackoverflow.com/feeds/tag?tagnames=fastapi&sort=newest"),
+        ("커뮤니티", "SO javascript", "https://stackoverflow.com/feeds/tag?tagnames=javascript&sort=newest"),
+    ],
+    "geeksforgeeks": [
+        ("아티클", "GeeksforGeeks", "https://www.geeksforgeeks.org/feed/"),
+    ],
+    "infoq": [
+        ("아티클", "InfoQ", "https://feed.infoq.com/"),
+    ],
+    "high-scalability": [
+        ("아티클", "High Scalability", "https://highscalability.com/rss/"),
+    ],
+    "netflix-tech": [
+        ("아티클", "Netflix Tech Blog", "https://netflixtechblog.com/feed"),
+    ],
+    "uber-eng": [
+        ("아티클", "Uber Engineering", "https://www.uber.com/blog/engineering/rss/"),
+        ("아티클", "Uber Eng Google", "https://news.google.com/rss/search?q=site:uber.com/blog/engineering&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "cloudflare-blog": [
+        ("아티클", "Cloudflare Blog", "https://blog.cloudflare.com/rss/"),
+    ],
+    "geeknews": [
+        ("아티클", "긱뉴스", "https://news.hada.io/rss/news"),
+        ("아티클", "긱뉴스 주간", "https://news.hada.io/rss/weekly"),
+    ],
+    "clien": [
+        ("커뮤니티", "클리앙 새로운소식", "https://www.clien.net/service/board/news/rss"),
+        ("커뮤니티", "클리앙 공지", "https://www.clien.net/service/board/notice/rss"),
+    ],
+    "hardbattle": [
+        ("아티클", "하드웨어배틀", "https://news.google.com/rss/search?q=site:hwbattle.com+OR+%ED%95%98%EB%93%9C%EC%9B%A8%EC%96%B4+%EB%B0%B0%ED%8B%80&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "itchosun": [
+        ("아티클", "IT조선", "https://news.google.com/rss/search?q=site:it.chosun.com&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "bloter": [
+        ("아티클", "블로터", "https://www.bloter.net/feed"),
+        ("아티클", "블로터 Google", "https://news.google.com/rss/search?q=site:bloter.net&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "outstanding": [
+        ("아티클", "아웃스탠딩", "https://news.google.com/rss/search?q=site:outstanding.kr&hl=ko&gl=KR&ceid=KR:ko"),
     ],
     "velog": [
         ("아티클", "velog", "https://news.google.com/rss/search?q=site:velog.io&hl=ko&gl=KR&ceid=KR:ko"),
@@ -215,6 +418,98 @@ _SITE_FEEDS: dict[str, list[tuple[str, str, str]]] = {
     ],
 }
 
+# Sites without reliable native RSS (or as secondary fallback): public HTML lists/search
+_SITE_HTML: dict[str, list[HtmlListSpec]] = {
+    "github-trending": [
+        HtmlListSpec(
+            kind="커뮤니티",
+            source="GitHub Trending",
+            url="https://github.com/trending",
+            href_re=r"^https://github\.com/[^/]+/[^/]+/?$",
+            base="https://github.com",
+            limit=8,
+        ),
+        HtmlListSpec(
+            kind="커뮤니티",
+            source="GitHub Trending · search",
+            url="https://github.com/search?q={q}&type=repositories&s=stars&o=desc",
+            href_re=r"^https://github\.com/[^/]+/[^/]+/?$",
+            base="https://github.com",
+            limit=6,
+        ),
+    ],
+    "geeksforgeeks": [
+        HtmlListSpec(
+            kind="아티클",
+            source="GeeksforGeeks search",
+            url="https://www.geeksforgeeks.org/?s={q}",
+            href_re=r"geeksforgeeks\.org/.+",
+            base="https://www.geeksforgeeks.org/",
+            limit=6,
+        ),
+    ],
+    "stackoverflow": [
+        HtmlListSpec(
+            kind="커뮤니티",
+            source="Stack Overflow search",
+            url="https://stackoverflow.com/search?q={q}",
+            href_re=r"stackoverflow\.com/questions/\d+",
+            base="https://stackoverflow.com/",
+            limit=6,
+        ),
+    ],
+    "hardbattle": [
+        HtmlListSpec(
+            kind="아티클",
+            source="하드웨어배틀 뉴스",
+            url="https://www.hwbattle.com/news/",
+            href_re=r"hwbattle\.com/.+",
+            base="https://www.hwbattle.com/",
+            limit=6,
+        ),
+    ],
+    "outstanding": [
+        HtmlListSpec(
+            kind="아티클",
+            source="아웃스탠딩 search",
+            url="https://outstanding.kr/?s={q}",
+            href_re=r"outstanding\.kr/.+",
+            base="https://outstanding.kr/",
+            limit=6,
+        ),
+    ],
+    "itchosun": [
+        HtmlListSpec(
+            kind="아티클",
+            source="IT조선 search",
+            url="https://it.chosun.com/search?query={q}",
+            href_re=r"it\.chosun\.com/.+",
+            base="https://it.chosun.com/",
+            limit=6,
+        ),
+    ],
+    "clien": [
+        HtmlListSpec(
+            kind="커뮤니티",
+            source="클리앙 새로운소식",
+            url="https://www.clien.net/service/board/news",
+            href_re=r"/service/board/news/\d+",
+            base="https://www.clien.net",
+            limit=8,
+        ),
+    ],
+    "quantstart": [
+        HtmlListSpec(
+            kind="아티클",
+            source="QuantStart articles",
+            url="https://www.quantstart.com/articles/",
+            href_re=r"quantstart\.com/articles/.+",
+            base="https://www.quantstart.com/",
+            limit=6,
+        ),
+    ],
+}
+
 
 def _feeds_for_sites(site_ids: list[str]) -> list[tuple[str, str, str]]:
     feeds: list[tuple[str, str, str]] = []
@@ -228,8 +523,29 @@ def _feeds_for_sites(site_ids: list[str]) -> list[tuple[str, str, str]]:
     return feeds
 
 
+def _html_for_sites(site_ids: list[str], topics: list[str]) -> list[SourceItem]:
+    q = _primary_query(topics)
+    collected: list[SourceItem] = []
+    seen: set[str] = set()
+    for sid in site_ids:
+        for spec in _SITE_HTML.get(sid, []):
+            for item in _parse_html_list(spec, query=q):
+                if item.url in seen:
+                    continue
+                seen.add(item.url)
+                collected.append(item)
+    return collected
+
+
+def collector_site_ids() -> set[str]:
+    return set(_SITE_FEEDS) | set(_SITE_HTML)
+
+
 def catalog_site_ids() -> list[str]:
-    return sorted(_SITE_FEEDS.keys())
+    """Ids the gatherer can resolve (must cover app.catalog.ref_sites)."""
+    from app.catalog.ref_sites import all_site_ids
+
+    return sorted(all_site_ids())
 
 
 def gather_candidates(
@@ -238,10 +554,10 @@ def gather_candidates(
     preferred_sites: list[str] | None = None,
     max_items: int = 24,
 ) -> list[SourceItem]:
-    """Fetch RSS + YouTube feeds. Prefer user-checked reference sites when set."""
-    site_feeds = _feeds_for_sites(preferred_sites or [])
+    """Fetch RSS + YouTube + optional public HTML lists for selected sites."""
+    sites = preferred_sites or []
+    site_feeds = _feeds_for_sites(sites)
     topic_feeds = _feeds_for_topics(topics) + _youtube_feeds_for_topics(topics)
-    # site picks first (higher priority), then topic fallbacks
     feeds = site_feeds + [f for f in topic_feeds if f not in site_feeds]
     collected: list[SourceItem] = []
     seen: set[str] = set()
@@ -254,6 +570,17 @@ def gather_candidates(
             collected.append(item)
             if len(collected) >= max_items:
                 return collected
+
+    # HTML fallback / supplement for sites that need list/search pages
+    if sites:
+        for item in _html_for_sites(sites, topics):
+            if item.url in seen:
+                continue
+            seen.add(item.url)
+            collected.append(item)
+            if len(collected) >= max_items:
+                return collected
+
     return collected
 
 
