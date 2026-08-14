@@ -30,13 +30,15 @@ class Preference(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True)
-    topics: Mapped[str] = mapped_column(Text, default="경제/주식/all,IT/AI/all,연애/소개팅/all")
+    topics: Mapped[str] = mapped_column(Text, default="경제/주식/국내증시,경제/주식/미국증시")
     tone: Mapped[str] = mapped_column(String(64), default="")  # unused; keep for schema compat
     send_hour: Mapped[int] = mapped_column(Integer, default=7)
     send_minute: Mapped[int] = mapped_column(Integer, default=30)
     timezone: Mapped[str] = mapped_column(String(64), default="Asia/Seoul")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     notes: Mapped[str] = mapped_column(Text, default="")  # answer customization prompt
+    # comma-separated reference site ids (naver-finance,toss-securities,…)
+    sources: Mapped[str] = mapped_column(Text, default="naver-finance,toss-securities,yahoo-finance")
 
     user: Mapped[User] = relationship(back_populates="preference")
 
@@ -68,3 +70,23 @@ class Digest(Base):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     user: Mapped[User] = relationship(back_populates="digests")
+
+
+class LlmUsage(Base):
+    """Per-call LLM token meter for admin serving dashboard."""
+
+    __tablename__ = "llm_usages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    purpose: Mapped[str] = mapped_column(String(64), default="digest_curate", index=True)
+    provider: Mapped[str] = mapped_column(String(32), default="")
+    model: Mapped[str] = mapped_column(String(120), default="")
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    success: Mapped[bool] = mapped_column(Boolean, default=True)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    user: Mapped[User] = relationship()

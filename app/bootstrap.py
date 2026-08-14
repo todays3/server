@@ -26,6 +26,17 @@ def ensure_schema() -> None:
             conn.execute(text("ALTER TABLE users ADD COLUMN approved_at DATETIME"))
         # SQLite cannot easily ALTER nullability; ORM already treats password_hash as optional.
 
+        pref_rows = conn.execute(text("PRAGMA table_info(preferences)")).fetchall()
+        if pref_rows:
+            pref_cols = {row[1] for row in pref_rows}
+            if "sources" not in pref_cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE preferences ADD COLUMN sources TEXT "
+                        "DEFAULT 'naver-finance,toss-securities,yahoo-finance'"
+                    )
+                )
+
 
 def _ensure_user(
     db: Session,
@@ -51,7 +62,7 @@ def _ensure_user(
         db.add(
             Preference(
                 user_id=user.id,
-                topics="경제/주식/all,IT/AI/all,연애/소개팅/all",
+                topics="경제/주식/국내증시,경제/주식/미국증시",
                 tone="",
                 timezone=settings.default_timezone,
             )

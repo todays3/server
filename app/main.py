@@ -53,7 +53,9 @@ def health() -> HealthOut:
     return HealthOut(
         status="ok",
         kakao_configured=settings.kakao_configured,
-        llm_configured=bool(settings.llm_api_key),
+        llm_configured=settings.llm_configured,
+        llm_provider=settings.llm_provider,
+        sources="rss+youtube",
         scheduler="running",
     )
 

@@ -13,6 +13,7 @@ router = APIRouter(prefix="/prefs", tags=["prefs"])
 
 def _pref_out(pref: Preference) -> PreferenceOut:
     topics = [t.strip() for t in pref.topics.split(",") if t.strip()]
+    sources = [s.strip() for s in (pref.sources or "").split(",") if s.strip()]
     return PreferenceOut(
         topics=topics,
         tone=pref.tone,
@@ -21,6 +22,7 @@ def _pref_out(pref: Preference) -> PreferenceOut:
         timezone=pref.timezone,
         enabled=pref.enabled,
         notes=pref.notes,
+        sources=sources,
     )
 
 
@@ -54,6 +56,9 @@ def update_prefs(
         if not topics:
             raise HTTPException(status_code=400, detail="관심 주제를 하나 이상 선택하세요")
         pref.topics = ",".join(topics)
+    if "sources" in data and data["sources"] is not None:
+        sources = [s.strip() for s in data.pop("sources") if s and s.strip()]
+        pref.sources = ",".join(sources)
     data.pop("timezone", None)  # always Seoul
     for key, value in data.items():
         setattr(pref, key, value)

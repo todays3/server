@@ -75,6 +75,7 @@ class PreferenceUpdate(BaseModel):
     timezone: str | None = Field(default=None, max_length=64)
     enabled: bool | None = None
     notes: str | None = Field(default=None, max_length=2000)  # customization prompt
+    sources: list[str] | None = None
 
     @field_validator("topics")
     @classmethod
@@ -82,8 +83,18 @@ class PreferenceUpdate(BaseModel):
         if value is None:
             return value
         cleaned = [t.strip() for t in value if t and t.strip()]
-        if len(cleaned) > 20:
-            raise ValueError("관심 주제는 최대 20개입니다")
+        if len(cleaned) > 60:
+            raise ValueError("관심 주제는 최대 60개입니다")
+        return cleaned
+
+    @field_validator("sources")
+    @classmethod
+    def sources_clean(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return value
+        cleaned = [t.strip() for t in value if t and t.strip()]
+        if len(cleaned) > 40:
+            raise ValueError("참조 사이트는 최대 40개입니다")
         return cleaned
 
 
@@ -95,6 +106,7 @@ class PreferenceOut(BaseModel):
     timezone: str
     enabled: bool
     notes: str
+    sources: list[str]
 
 
 class DigestOut(BaseModel):
@@ -118,4 +130,82 @@ class HealthOut(BaseModel):
     status: str
     kakao_configured: bool
     llm_configured: bool
+    llm_provider: str
+    sources: str
     scheduler: str
+
+
+class AdminUsageSummary(BaseModel):
+    calls: int = 0
+    success_calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
+class AdminDailyPoint(BaseModel):
+    """One Seoul calendar day of admin trend metrics."""
+
+    date: str
+    users_total: int = 0
+    users_approved: int = 0
+    users_pending: int = 0
+    tokens: int = 0
+    tokens_cumulative: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    calls: int = 0
+    success_calls: int = 0
+    calls_cumulative: int = 0
+
+
+class AdminUsageEvent(BaseModel):
+    id: int
+    user_id: int
+    email: str
+    purpose: str
+    provider: str
+    model: str
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    success: bool
+    error_message: str
+    created_at: datetime
+
+
+class AdminPrefDetail(BaseModel):
+    topics: list[str]
+    sources: list[str]
+    notes: str
+    send_hour: int
+    send_minute: int
+    timezone: str
+    enabled: bool
+
+
+class AdminUserDetail(BaseModel):
+    id: int
+    email: EmailStr
+    display_name: str
+    status: str
+    is_admin: bool
+    kakao_connected: bool
+    created_at: datetime
+    approved_at: datetime | None
+    preference: AdminPrefDetail | None
+    usage_all: AdminUsageSummary
+    usage_today: AdminUsageSummary
+
+
+class AdminOverview(BaseModel):
+    users_total: int
+    users_pending: int
+    users_approved: int
+    llm_configured: bool
+    llm_provider: str
+    llm_model: str
+    usage_all: AdminUsageSummary
+    usage_today: AdminUsageSummary
+    series: list[AdminDailyPoint]
+    recent: list[AdminUsageEvent]

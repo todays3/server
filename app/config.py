@@ -27,9 +27,12 @@ class Settings(BaseSettings):
     # Must match Kakao Developers Redirect URI (OAuth signup/login callback)
     kakao_redirect_uri: str = "http://localhost:8000/api/v1/auth/kakao/callback"
 
+    # Free-tier friendly default: Groq OpenAI-compatible API
+    # Get a key at https://console.groq.com (free) then set LLM_API_KEY
+    llm_provider: str = "groq"  # groq | openai | custom
     llm_api_key: str = ""
-    llm_base_url: str = "https://api.openai.com/v1"
-    llm_model: str = "gpt-4o-mini"
+    llm_base_url: str = ""
+    llm_model: str = ""
 
     # Auth endpoint rate limit (per IP + path)
     rate_limit_auth_max: int = 30
@@ -38,6 +41,29 @@ class Settings(BaseSettings):
     @property
     def kakao_configured(self) -> bool:
         return bool(self.kakao_rest_api_key)
+
+    @property
+    def llm_configured(self) -> bool:
+        return bool(self.llm_api_key)
+
+    @property
+    def resolved_llm_base_url(self) -> str:
+        if self.llm_base_url:
+            return self.llm_base_url
+        if self.llm_provider == "groq":
+            return "https://api.groq.com/openai/v1"
+        if self.llm_provider == "openai":
+            return "https://api.openai.com/v1"
+        return "https://api.groq.com/openai/v1"
+
+    @property
+    def resolved_llm_model(self) -> str:
+        if self.llm_model:
+            return self.llm_model
+        if self.llm_provider == "openai":
+            return "gpt-4o-mini"
+        # Groq free-tier default
+        return "llama-3.3-70b-versatile"
 
     @property
     def api_prefix(self) -> str:

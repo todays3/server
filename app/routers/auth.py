@@ -84,7 +84,7 @@ def register(payload: RegisterRequest, db: Annotated[Session, Depends(get_db)]) 
     db.add(
         Preference(
             user_id=user.id,
-            topics="경제/주식/all,IT/AI/all,연애/소개팅/all",
+            topics="경제/주식/국내증시,경제/주식/미국증시",
             tone="",
             timezone=settings.default_timezone,
         )

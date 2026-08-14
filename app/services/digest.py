@@ -1,16 +1,19 @@
-"""Generate '오늘의 3' — three curated links (YouTube / article / community)."""
+"""Generate '오늘의 3' — three curated links from live sources (+ optional free LLM)."""
 
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from openai import OpenAI
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models import Digest, Preference, User
+from app.services import llm as llm_service
+from app.services.sources import SourceItem, candidates_as_prompt_block, gather_candidates
 
 SEOUL = "Asia/Seoul"
 
@@ -19,7 +22,7 @@ _CURATED: list[dict[str, str]] = [
         "kind": "아티클",
         "title": "미국 증시·금리, 오늘만 필요한 요약",
         "blurb": "장 흐름을 15분 안에.",
-        "url": "https://www.youtube.com/results?search_query=us+stock+market+today",
+        "url": "https://news.google.com/rss/search?q=US+stock+market&hl=en-US&gl=US&ceid=US:en",
         "hint": "경제",
     },
     {
@@ -31,52 +34,10 @@ _CURATED: list[dict[str, str]] = [
     },
     {
         "kind": "유튜브",
-        "title": "연애 초반 연락 템포, 과해석 줄이기",
-        "blurb": "짧은 체크리스트.",
-        "url": "https://www.youtube.com/results?search_query=%EC%97%B0%EC%95%A0+%EC%97%B0%EB%9D%BD",
-        "hint": "연애",
-    },
-    {
-        "kind": "아티클",
-        "title": "생성형 AI를 일상에 붙이는 최소 루틴",
-        "blurb": "도구 나열 대신 한 가지.",
-        "url": "https://www.youtube.com/results?search_query=generative+ai+daily",
-        "hint": "IT",
-    },
-    {
-        "kind": "커뮤니티",
-        "title": "이직·면접 질문 뼈대 모음",
-        "blurb": "답변 골격만 챙기기.",
-        "url": "https://www.reddit.com/r/cscareerquestions/",
-        "hint": "커리어",
-    },
-    {
-        "kind": "유튜브",
-        "title": "바쁜 주의 수면·운동 최소선",
-        "blurb": "완벽한 루틴 말고 버티는 루틴.",
-        "url": "https://www.youtube.com/results?search_query=sleep+exercise+busy",
-        "hint": "라이프",
-    },
-    {
-        "kind": "아티클",
-        "title": "환율·물가 한 장 브리핑",
-        "blurb": "제목보다 흐름.",
-        "url": "https://www.bok.or.kr/",
-        "hint": "경제",
-    },
-    {
-        "kind": "커뮤니티",
-        "title": "이번 주 사회 이슈 팩트 링크",
-        "blurb": "감정 댓글 거르기.",
-        "url": "https://news.ycombinator.com/",
-        "hint": "뉴스",
-    },
-    {
-        "kind": "유튜브",
-        "title": "비트코인·알트, 온체인만 짧게",
-        "blurb": "공포·탐욕 뉴스 걸러 읽기.",
-        "url": "https://www.youtube.com/results?search_query=bitcoin+onchain",
-        "hint": "경제",
+        "title": "삼프로TV · 시장 브리핑",
+        "blurb": "국내 시황 한 편.",
+        "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UChlgI3UHCOnwUGzWzbJEuYw",
+        "hint": "주식",
     },
 ]
 
@@ -86,33 +47,7 @@ def _topic_list(pref: Preference) -> list[str]:
 
 
 def _customization(pref: Preference) -> str:
-    # notes = user customization prompt (tone field unused)
     return (pref.notes or "").strip()
-
-
-def _pick_three(topics: list[str], seed: str) -> list[dict[str, str]]:
-    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
-    start = int(digest[:8], 16) % len(_CURATED)
-    ordered = _CURATED[start:] + _CURATED[:start]
-
-    picked: list[dict[str, str]] = []
-    topic_blob = " ".join(topics).lower()
-
-    for item in ordered:
-        if len(picked) >= 3:
-            break
-        hint = item["hint"].lower()
-        if topics and hint and hint not in topic_blob:
-            continue
-        picked.append(item)
-
-    if len(picked) < 3:
-        for item in ordered:
-            if item not in picked:
-                picked.append(item)
-            if len(picked) >= 3:
-                break
-    return picked[:3]
 
 
 def _format_body(name: str, items: list[dict[str, str]], pref: Preference, topics: list[str]) -> str:
@@ -121,10 +56,11 @@ def _format_body(name: str, items: list[dict[str, str]], pref: Preference, topic
         "",
     ]
     for i, item in enumerate(items, start=1):
-        topic = topics[(i - 1) % len(topics)] if topics else item["hint"]
+        topic = topics[(i - 1) % len(topics)] if topics else item.get("hint", "")
         lines.append(f"{i}) [{item['kind']}] {item['title']}")
-        lines.append(f"   {item['blurb']}")
-        lines.append(f"   주제: {topic.replace('/', ' · ')}")
+        lines.append(f"   {item.get('blurb') or item.get('summary') or ''}")
+        if topic:
+            lines.append(f"   주제: {topic.replace('/', ' · ')}")
         lines.append(f"   {item['url']}")
         lines.append("")
     custom = _customization(pref)
@@ -134,66 +70,150 @@ def _format_body(name: str, items: list[dict[str, str]], pref: Preference, topic
     return "\n".join(lines).strip()
 
 
-def _template_digest(user: User, pref: Preference) -> tuple[str, str]:
-    now = datetime.now(ZoneInfo(SEOUL))
-    weekday = ["월", "화", "수", "목", "금", "토", "일"][now.weekday()]
-    topics = _topic_list(pref)
-    name = user.display_name or "당신"
-    seed = f"{user.id}:{now.date().isoformat()}:{','.join(topics)}"
-    items = _pick_three(topics, seed)
+def _heuristic_pick(candidates: list[SourceItem], seed: str) -> list[dict[str, str]]:
+    """Pick up to 3 items preferring kind diversity — works without LLM."""
+    if not candidates:
+        return []
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
+    start = int(digest[:8], 16) % len(candidates)
+    ordered = candidates[start:] + candidates[:start]
 
-    title = f"오늘의 3 · {now.month}/{now.day} ({weekday})"
-    body = _format_body(name, items, pref, topics)
-    return title, body
+    picked: list[SourceItem] = []
+    used_kinds: set[str] = set()
+    for item in ordered:
+        if item.kind in used_kinds and len(picked) < 3:
+            continue
+        picked.append(item)
+        used_kinds.add(item.kind)
+        if len(picked) >= 3:
+            break
+    if len(picked) < 3:
+        for item in ordered:
+            if item not in picked:
+                picked.append(item)
+            if len(picked) >= 3:
+                break
+
+    return [
+        {
+            "kind": p.kind,
+            "title": p.title,
+            "blurb": p.summary or p.source,
+            "url": p.url,
+            "hint": p.source,
+        }
+        for p in picked[:3]
+    ]
 
 
-def _llm_digest(user: User, pref: Preference) -> tuple[str, str] | None:
+def _static_fallback(topics: list[str], seed: str) -> list[dict[str, str]]:
+    start = int(hashlib.sha256(seed.encode()).hexdigest()[:8], 16) % len(_CURATED)
+    ordered = _CURATED[start:] + _CURATED[:start]
+    return [
+        {
+            "kind": x["kind"],
+            "title": x["title"],
+            "blurb": x["blurb"],
+            "url": x["url"],
+            "hint": x["hint"],
+        }
+        for x in ordered[:3]
+    ]
+
+
+def _llm_curate(
+    db: Session,
+    user: User,
+    pref: Preference,
+    candidates: list[SourceItem],
+) -> tuple[str, str] | None:
     settings = get_settings()
-    if not settings.llm_api_key:
+    if not settings.llm_configured or not candidates:
         return None
 
     topics = ", ".join(_topic_list(pref)) or "일반"
     custom = _customization(pref) or "(없음)"
-    client = OpenAI(api_key=settings.llm_api_key, base_url=settings.llm_base_url)
     prompt = (
-        "너는 '오늘의 3' 큐레이터다. 카카오톡 '나에게 보내기'용 브리프를 한국어로 작성한다.\n"
-        "유튜브·아티클·커뮤니티를 망라한 **읽을거리 3개만** 고른다.\n"
-        "'오늘 한 줄'이나 '한 가지 행동'은 쓰지 않는다.\n"
-        "형식:\n"
-        "첫 줄: 제목 (예: 오늘의 3 · M/D (요일))\n"
-        "본문: 1) 2) 3) 각각 [유튜브|아티클|커뮤니티] 제목 / 한 줄 설명 / 주제 / https:// URL\n"
-        "사용자 커스터마이징 문장을 최우선으로 반영한다 (길이·제외·눈높이·매체 비중).\n"
-        "최대 900자. 가짜 통계·이모지 남발 금지.\n"
+        "너는 '오늘의 3' 큐레이터다. 아래 후보 목록에서만 골라 카카오톡용 브리프를 한국어로 만든다.\n"
+        "반드시 후보에 있는 URL만 사용한다. URL을 지어내지 마라.\n"
+        "유튜브·아티클·커뮤니티를 가능하면 섞어 **딱 3개**.\n"
+        "JSON만 출력:\n"
+        '{"title":"오늘의 3 · M/D (요일)","items":[{"kind":"유튜브|아티클|커뮤니티","title":"...","blurb":"...","url":"https://..."}]}\n'
         f"수신자: {user.display_name}\n"
-        f"관심 주제(거대/대/소): {topics}\n"
+        f"관심 주제: {topics}\n"
         f"커스터마이징: {custom}\n"
+        f"후보:\n{candidates_as_prompt_block(candidates)}\n"
     )
+    text, _usage = llm_service.chat_completion(
+        db,
+        user_id=user.id,
+        purpose="digest_curate",
+        messages=[
+            {"role": "system", "content": "Return only valid JSON for three curated links."},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.4,
+        max_tokens=900,
+    )
+    if not text:
+        return None
     try:
-        resp = client.chat.completions.create(
-            model=settings.llm_model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Curate exactly 3 linked reads for Kakao memo in Korean.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.7,
-            max_tokens=800,
-        )
-        text = (resp.choices[0].message.content or "").strip()
-        if not text:
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.I | re.M)
+        data = json.loads(text)
+        items = data.get("items") or []
+        if len(items) < 3:
             return None
-        lines = text.splitlines()
-        title = lines[0].lstrip("# ").strip()[:120]
-        body = "\n".join(lines[1:]).strip() or text
+        allowed = {c.url for c in candidates}
+        cleaned: list[dict[str, str]] = []
+        for raw in items[:3]:
+            url = str(raw.get("url") or "")
+            if url not in allowed:
+                match = next((c for c in candidates if c.url in url or url in c.url), None)
+                if match is None:
+                    continue
+                url = match.url
+            cleaned.append(
+                {
+                    "kind": str(raw.get("kind") or "아티클"),
+                    "title": str(raw.get("title") or "")[:120],
+                    "blurb": str(raw.get("blurb") or "")[:160],
+                    "url": url,
+                    "hint": "",
+                }
+            )
+        if len(cleaned) < 3:
+            return None
+        title = str(data.get("title") or "").strip()[:120]
+        if not title:
+            now = datetime.now(ZoneInfo(SEOUL))
+            weekday = ["월", "화", "수", "목", "금", "토", "일"][now.weekday()]
+            title = f"오늘의 3 · {now.month}/{now.day} ({weekday})"
+        body = _format_body(user.display_name or "당신", cleaned, pref, _topic_list(pref))
         return title, body
     except Exception:
         return None
 
 
-def generate_digest_content(user: User, pref: Preference) -> tuple[str, str]:
-    return _llm_digest(user, pref) or _template_digest(user, pref)
+def _source_list(pref: Preference) -> list[str]:
+    return [s.strip() for s in (pref.sources or "").split(",") if s.strip()]
+
+
+def generate_digest_content(db: Session, user: User, pref: Preference) -> tuple[str, str]:
+    topics = _topic_list(pref)
+    sites = _source_list(pref)
+    now = datetime.now(ZoneInfo(SEOUL))
+    weekday = ["월", "화", "수", "목", "금", "토", "일"][now.weekday()]
+    seed = f"{user.id}:{now.date().isoformat()}:{','.join(topics)}:{','.join(sites)}"
+    name = user.display_name or "당신"
+    title = f"오늘의 3 · {now.month}/{now.day} ({weekday})"
+
+    candidates = gather_candidates(topics, preferred_sites=sites)
+    llm = _llm_curate(db, user, pref, candidates)
+    if llm:
+        return llm
+
+    items = _heuristic_pick(candidates, seed) or _static_fallback(topics, seed)
+    return title, _format_body(name, items, pref, topics)
 
 
 def create_digest(
@@ -206,7 +226,7 @@ def create_digest(
     if pref.timezone != SEOUL:
         pref.timezone = SEOUL
         db.add(pref)
-    title, body = generate_digest_content(user, pref)
+    title, body = generate_digest_content(db, user, pref)
     digest = Digest(
         user_id=user.id,
         title=title,
