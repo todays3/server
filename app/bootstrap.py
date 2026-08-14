@@ -36,6 +36,26 @@ def ensure_schema() -> None:
                         "DEFAULT 'naver-finance,toss-securities,yahoo-finance'"
                     )
                 )
+            if "send_times" not in pref_cols:
+                conn.execute(text("ALTER TABLE preferences ADD COLUMN send_times TEXT DEFAULT '07:30'"))
+                # Backfill from legacy single hour/minute columns.
+                conn.execute(
+                    text(
+                        "UPDATE preferences SET send_times = "
+                        "printf('%02d:%02d', COALESCE(send_hour, 7), COALESCE(send_minute, 30)) "
+                        "WHERE send_times IS NULL OR send_times = ''"
+                    )
+                )
+            if "insight_questions" not in pref_cols:
+                conn.execute(
+                    text("ALTER TABLE preferences ADD COLUMN insight_questions BOOLEAN DEFAULT 0")
+                )
+
+        dig_rows = conn.execute(text("PRAGMA table_info(digests)")).fetchall()
+        if dig_rows:
+            dig_cols = {row[1] for row in dig_rows}
+            if "items_json" not in dig_cols:
+                conn.execute(text("ALTER TABLE digests ADD COLUMN items_json TEXT DEFAULT '[]'"))
 
 
 def _ensure_user(

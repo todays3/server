@@ -121,7 +121,7 @@ def _parse_feed(kind: str, source: str, url: str, *, limit: int = 5) -> list[Sou
     for entry in parsed.entries[:limit]:
         link = getattr(entry, "link", "") or ""
         title = _clean(getattr(entry, "title", "") or "제목 없음", 120)
-        summary = _clean(getattr(entry, "summary", "") or getattr(entry, "description", "") or "", 160)
+        summary = _clean(getattr(entry, "summary", "") or getattr(entry, "description", "") or "", 220)
         if not link or not title:
             continue
         items.append(
@@ -130,79 +130,106 @@ def _parse_feed(kind: str, source: str, url: str, *, limit: int = 5) -> list[Sou
     return items
 
 
-# User-selected reference site id → RSS/Atom feeds
+# User-selected reference site id → RSS/Atom feeds (prefer native feeds over News proxies)
 _SITE_FEEDS: dict[str, list[tuple[str, str, str]]] = {
     "naver-finance": [
-        ("아티클", "네이버 증권·뉴스", "https://news.google.com/rss/search?q=%EB%84%A4%EC%9D%B4%EB%B2%84+%EC%A6%9D%EA%B6%8C&hl=ko&gl=KR&ceid=KR:ko"),
+        (
+            "아티클",
+            "네이버 증권·뉴스",
+            "https://news.google.com/rss/search?q=%EC%BD%94%EC%8A%A4%ED%94%BC+%EC%A6%9D%EA%B6%8C&hl=ko&gl=KR&ceid=KR:ko",
+        ),
+        ("커뮤니티", "네이버 종목토론 이슈", "https://news.google.com/rss/search?q=%EC%A2%85%EB%AA%A9%ED%86%A0%EB%A1%A0&hl=ko&gl=KR&ceid=KR:ko"),
     ],
     "toss-securities": [
-        ("아티클", "토스 증권 관련", "https://news.google.com/rss/search?q=%ED%86%A0%EC%8A%A4+%EC%A6%9D%EA%B6%8C&hl=ko&gl=KR&ceid=KR:ko"),
+        ("아티클", "토스 증권·투자", "https://news.google.com/rss/search?q=%ED%86%A0%EC%8A%A4%EC%A6%9D%EA%B6%8C&hl=ko&gl=KR&ceid=KR:ko"),
     ],
     "kakao-stock": [
-        ("아티클", "카카오페이증권", "https://news.google.com/rss/search?q=%EC%B9%B4%EC%B9%B4%EC%98%A4%ED%8E%98%EC%9D%B4+%EC%A6%9D%EA%B6%8C&hl=ko&gl=KR&ceid=KR:ko"),
+        ("아티클", "카카오페이증권", "https://news.google.com/rss/search?q=%EC%B9%B4%EC%B9%B4%EC%98%A4%ED%8E%98%EC%9D%B4%EC%A6%9D%EA%B6%8C&hl=ko&gl=KR&ceid=KR:ko"),
     ],
     "dart": [
-        ("아티클", "DART·공시", "https://news.google.com/rss/search?q=DART+%EA%B3%B5%EC%8B%9C&hl=ko&gl=KR&ceid=KR:ko"),
+        ("아티클", "전자공시·DART", "https://news.google.com/rss/search?q=%EC%A0%84%EC%9E%90%EA%B3%B5%EC%8B%9C+OR+DART+%EA%B3%B5%EC%8B%9C&hl=ko&gl=KR&ceid=KR:ko"),
     ],
     "hankyung": [
-        ("아티클", "한국경제", "https://www.hankyung.com/feed/finance"),
+        ("아티클", "한국경제 금융", "https://www.hankyung.com/feed/finance"),
+        ("아티클", "한국경제 증권", "https://www.hankyung.com/feed/economy"),
     ],
     "mk-stock": [
-        ("아티클", "매경 증권", "https://news.google.com/rss/search?q=%EB%A7%A4%EC%9D%BC%EA%B2%BD%EC%A0%9C+%EC%A6%9D%EA%B6%8C&hl=ko&gl=KR&ceid=KR:ko"),
+        ("아티클", "매일경제", "https://www.mk.co.kr/rss/40300001/"),
+        ("아티클", "매경 증권 뉴스", "https://news.google.com/rss/search?q=%EB%A7%A4%EC%9D%BC%EA%B2%BD%EC%A0%9C+%EC%A6%9D%EA%B6%8C&hl=ko&gl=KR&ceid=KR:ko"),
     ],
     "sampro": [
         ("유튜브", "삼프로TV", "https://www.youtube.com/feeds/videos.xml?channel_id=UChlgI3UHCOnwUGzWzbJEuYw"),
     ],
     "yahoo-finance": [
         ("아티클", "Yahoo Finance", "https://finance.yahoo.com/news/rssindex"),
+        ("아티클", "Yahoo markets", "https://news.google.com/rss/search?q=site:finance.yahoo.com+markets&hl=en-US&gl=US&ceid=US:en"),
     ],
     "investing": [
         ("아티클", "Investing.com", "https://www.investing.com/rss/news.rss"),
+        ("아티클", "Investing markets", "https://www.investing.com/rss/news_25.rss"),
     ],
     "bloomberg": [
-        ("아티클", "Bloomberg markets", "https://news.google.com/rss/search?q=Bloomberg+markets&hl=en-US&gl=US&ceid=US:en"),
+        ("아티클", "Bloomberg markets", "https://feeds.bloomberg.com/markets/news.rss"),
+        ("아티클", "Bloomberg Google", "https://news.google.com/rss/search?q=site:bloomberg.com+markets&hl=en-US&gl=US&ceid=US:en"),
     ],
     "cnbc": [
-        ("아티클", "CNBC", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"),
+        ("아티클", "CNBC top news", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"),
+        ("아티클", "CNBC world", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100727362"),
     ],
     "reddit-stocks": [
         ("커뮤니티", "r/stocks", "https://www.reddit.com/r/stocks/.rss"),
+        ("커뮤니티", "r/investing", "https://www.reddit.com/r/investing/.rss"),
     ],
     "seeking-alpha": [
         ("아티클", "Seeking Alpha", "https://seekingalpha.com/market_currents.xml"),
+        ("아티클", "Seeking Alpha news", "https://seekingalpha.com/feed.xml"),
     ],
     "hn": [
         ("커뮤니티", "Hacker News", "https://hnrss.org/frontpage"),
+        ("커뮤니티", "HN best", "https://hnrss.org/best"),
     ],
     "github-trending": [
-        ("아티클", "GitHub trending news", "https://news.google.com/rss/search?q=GitHub+trending&hl=en-US&gl=US&ceid=US:en"),
+        ("아티클", "GitHub Blog", "https://github.blog/feed/"),
+        ("커뮤니티", "r/github", "https://www.reddit.com/r/github/.rss"),
     ],
     "velog": [
         ("아티클", "velog", "https://news.google.com/rss/search?q=site:velog.io&hl=ko&gl=KR&ceid=KR:ko"),
     ],
     "okky": [
-        ("커뮤니티", "OKKY", "https://news.google.com/rss/search?q=OKKY+%EA%B0%9C%EB%B0%9C&hl=ko&gl=KR&ceid=KR:ko"),
+        ("커뮤니티", "OKKY 이슈", "https://news.google.com/rss/search?q=OKKY+%EA%B0%9C%EB%B0%9C&hl=ko&gl=KR&ceid=KR:ko"),
     ],
     "youtube-life": [
         ("유튜브", "지식인사이드", "https://www.youtube.com/feeds/videos.xml?channel_id=UCGX5sP4ehPfCPU1yGT1JT3w"),
+        ("유튜브", "슈카월드", "https://www.youtube.com/feeds/videos.xml?channel_id=UCsJ6RuBiTVWRX1041hfhWYA"),
     ],
     "brunch": [
         ("아티클", "브런치", "https://news.google.com/rss/search?q=site:brunch.co.kr&hl=ko&gl=KR&ceid=KR:ko"),
     ],
     "wanted": [
-        ("아티클", "원티드·채용", "https://news.google.com/rss/search?q=%EC%9D%B4%EC%A7%81+%EC%B1%84%EC%9A%A9&hl=ko&gl=KR&ceid=KR:ko"),
+        ("아티클", "원티드·채용", "https://news.google.com/rss/search?q=%EC%9B%90%ED%8B%B0%EB%93%9C+%EC%B1%84%EC%9A%A9&hl=ko&gl=KR&ceid=KR:ko"),
+        ("아티클", "이직·커리어", "https://news.google.com/rss/search?q=%EC%9D%B4%EC%A7%81+%EC%BB%A4%EB%A6%AC%EC%96%B4&hl=ko&gl=KR&ceid=KR:ko"),
     ],
     "naver-news": [
         ("아티클", "네이버 뉴스", "https://news.google.com/rss?hl=ko&gl=KR&ceid=KR:ko"),
+        ("아티클", "네이버 경제", "https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=ko&gl=KR&ceid=KR:ko"),
     ],
 }
 
 
 def _feeds_for_sites(site_ids: list[str]) -> list[tuple[str, str, str]]:
     feeds: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
     for sid in site_ids:
-        feeds.extend(_SITE_FEEDS.get(sid, []))
+        for feed in _SITE_FEEDS.get(sid, []):
+            if feed in seen:
+                continue
+            seen.add(feed)
+            feeds.append(feed)
     return feeds
+
+
+def catalog_site_ids() -> list[str]:
+    return sorted(_SITE_FEEDS.keys())
 
 
 def gather_candidates(

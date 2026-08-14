@@ -19,6 +19,7 @@ from app.schemas import (
     AdminUserDetail,
     AdminUserOut,
 )
+from app.services.send_times import parse_send_times_raw
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 SEOUL = ZoneInfo("Asia/Seoul")
@@ -156,14 +157,17 @@ def _daily_series(
 def _pref_detail(pref: Preference | None) -> AdminPrefDetail | None:
     if pref is None:
         return None
+    slots = parse_send_times_raw(pref.send_times, hour=pref.send_hour, minute=pref.send_minute)
     return AdminPrefDetail(
         topics=[t.strip() for t in pref.topics.split(",") if t.strip()],
         sources=[s.strip() for s in (pref.sources or "").split(",") if s.strip()],
         notes=pref.notes or "",
-        send_hour=pref.send_hour,
-        send_minute=pref.send_minute,
+        send_hour=slots[0].hour,
+        send_minute=slots[0].minute,
+        send_times=slots,
         timezone=pref.timezone,
         enabled=pref.enabled,
+        insight_questions=bool(pref.insight_questions),
     )
 
 

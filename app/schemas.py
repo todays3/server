@@ -65,6 +65,11 @@ class AdminUserOut(BaseModel):
     approved_at: datetime | None
 
 
+class SendTimeSlot(BaseModel):
+    hour: int = Field(ge=0, le=23)
+    minute: int = Field(ge=0, le=59)
+
+
 class PreferenceUpdate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -72,10 +77,12 @@ class PreferenceUpdate(BaseModel):
     tone: str | None = Field(default=None, max_length=64)  # deprecated
     send_hour: int | None = Field(default=None, ge=0, le=23)
     send_minute: int | None = Field(default=None, ge=0, le=59)
+    send_times: list[SendTimeSlot] | None = None
     timezone: str | None = Field(default=None, max_length=64)
     enabled: bool | None = None
     notes: str | None = Field(default=None, max_length=2000)  # customization prompt
     sources: list[str] | None = None
+    insight_questions: bool | None = None
 
     @field_validator("topics")
     @classmethod
@@ -94,8 +101,19 @@ class PreferenceUpdate(BaseModel):
             return value
         cleaned = [t.strip() for t in value if t and t.strip()]
         if len(cleaned) > 40:
-            raise ValueError("참조 사이트는 최대 40개입니다")
+            raise ValueError("참고 사이트는 최대 40개입니다")
         return cleaned
+
+    @field_validator("send_times")
+    @classmethod
+    def send_times_bounded(cls, value: list[SendTimeSlot] | None) -> list[SendTimeSlot] | None:
+        if value is None:
+            return value
+        if len(value) < 1:
+            raise ValueError("발송 시간을 하나 이상 설정하세요")
+        if len(value) > 5:
+            raise ValueError("발송 시간은 최대 5개입니다")
+        return value
 
 
 class PreferenceOut(BaseModel):
@@ -103,10 +121,22 @@ class PreferenceOut(BaseModel):
     tone: str
     send_hour: int
     send_minute: int
+    send_times: list[SendTimeSlot]
     timezone: str
     enabled: bool
     notes: str
     sources: list[str]
+    insight_questions: bool
+
+
+class DigestItemOut(BaseModel):
+    kind: str
+    title: str
+    blurb: str = ""
+    url: str
+    topic: str = ""
+    insight_q: str = ""
+    insight_url: str = ""
 
 
 class DigestOut(BaseModel):
@@ -120,10 +150,27 @@ class DigestOut(BaseModel):
     error_message: str
     created_at: datetime
     sent_at: datetime | None
+    items: list[DigestItemOut] = Field(default_factory=list)
 
 
 class PreviewRequest(BaseModel):
     send: bool = False
+
+
+class KakaoStatusOut(BaseModel):
+    configured: bool
+    connected: bool
+    kakao_id: str | None = None
+
+
+class KakaoConnectOut(BaseModel):
+    configured: bool
+    url: str | None = None
+    message: str | None = None
+
+
+class KakaoDisconnectOut(BaseModel):
+    connected: bool
 
 
 class HealthOut(BaseModel):
@@ -180,8 +227,10 @@ class AdminPrefDetail(BaseModel):
     notes: str
     send_hour: int
     send_minute: int
+    send_times: list[SendTimeSlot]
     timezone: str
     enabled: bool
+    insight_questions: bool = False
 
 
 class AdminUserDetail(BaseModel):

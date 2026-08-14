@@ -34,11 +34,15 @@ class Preference(Base):
     tone: Mapped[str] = mapped_column(String(64), default="")  # unused; keep for schema compat
     send_hour: Mapped[int] = mapped_column(Integer, default=7)
     send_minute: Mapped[int] = mapped_column(Integer, default=30)
+    # comma-separated Seoul times: "07:30,12:00,18:00"
+    send_times: Mapped[str] = mapped_column(Text, default="07:30")
     timezone: Mapped[str] = mapped_column(String(64), default="Asia/Seoul")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     notes: Mapped[str] = mapped_column(Text, default="")  # answer customization prompt
     # comma-separated reference site ids (naver-finance,toss-securities,…)
     sources: Mapped[str] = mapped_column(Text, default="naver-finance,toss-securities,yahoo-finance")
+    # per-item follow-up insight question + helper URL
+    insight_questions: Mapped[bool] = mapped_column(Boolean, default=False)
 
     user: Mapped[User] = relationship(back_populates="preference")
 
@@ -68,6 +72,8 @@ class Digest(Base):
     error_message: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # JSON array of curated items for structured clients
+    items_json: Mapped[str] = mapped_column(Text, default="[]")
 
     user: Mapped[User] = relationship(back_populates="digests")
 

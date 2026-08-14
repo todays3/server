@@ -1,1 +1,1 @@
-"""오늘의 3 — personal morning Kakao digest."""
+"""오늘의 3 — personal Kakao digest."""

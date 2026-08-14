@@ -6,7 +6,8 @@ from sqlalchemy.orm import Session
 from app.auth import get_current_user
 from app.db import get_db
 from app.models import Preference, User
-from app.schemas import PreferenceOut, PreferenceUpdate
+from app.schemas import PreferenceOut, PreferenceUpdate, SendTimeSlot
+from app.services.send_times import encode_send_times, normalize_slots, parse_send_times_raw
 
 router = APIRouter(prefix="/prefs", tags=["prefs"])
 
@@ -14,16 +15,27 @@ router = APIRouter(prefix="/prefs", tags=["prefs"])
 def _pref_out(pref: Preference) -> PreferenceOut:
     topics = [t.strip() for t in pref.topics.split(",") if t.strip()]
     sources = [s.strip() for s in (pref.sources or "").split(",") if s.strip()]
+    slots = parse_send_times_raw(pref.send_times, hour=pref.send_hour, minute=pref.send_minute)
+    first = slots[0]
     return PreferenceOut(
         topics=topics,
         tone=pref.tone,
-        send_hour=pref.send_hour,
-        send_minute=pref.send_minute,
+        send_hour=first.hour,
+        send_minute=first.minute,
+        send_times=slots,
         timezone=pref.timezone,
         enabled=pref.enabled,
         notes=pref.notes,
         sources=sources,
+        insight_questions=bool(pref.insight_questions),
     )
+
+
+def _apply_send_times(pref: Preference, slots: list[SendTimeSlot]) -> None:
+    normalized = normalize_slots(slots)
+    pref.send_times = encode_send_times(normalized)
+    pref.send_hour = normalized[0].hour
+    pref.send_minute = normalized[0].minute
 
 
 def _ensure_pref(db: Session, user: User) -> Preference:
@@ -59,7 +71,23 @@ def update_prefs(
     if "sources" in data and data["sources"] is not None:
         sources = [s.strip() for s in data.pop("sources") if s and s.strip()]
         pref.sources = ",".join(sources)
-    data.pop("timezone", None)  # always Seoul
+
+    send_times = data.pop("send_times", None)
+    send_hour = data.pop("send_hour", None)
+    send_minute = data.pop("send_minute", None)
+    data.pop("timezone", None)
+
+    if send_times is not None:
+        slots = [SendTimeSlot.model_validate(s) for s in send_times]
+        _apply_send_times(pref, slots)
+    elif send_hour is not None or send_minute is not None:
+        current = parse_send_times_raw(pref.send_times, hour=pref.send_hour, minute=pref.send_minute)
+        first = current[0]
+        h = send_hour if send_hour is not None else first.hour
+        m = send_minute if send_minute is not None else first.minute
+        rest = current[1:]
+        _apply_send_times(pref, [SendTimeSlot(hour=h, minute=m), *rest])
+
     for key, value in data.items():
         setattr(pref, key, value)
     pref.timezone = "Asia/Seoul"

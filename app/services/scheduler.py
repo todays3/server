@@ -1,7 +1,7 @@
-"""Digest scheduler at each user's chosen Asia/Seoul send time.
+"""Digest scheduler at each user's chosen Asia/Seoul send times.
 
-Runs every minute and sends digests whose send_hour:send_minute matches now (Seoul),
-once per calendar day per user.
+Runs every minute and sends digests when now matches any configured slot,
+at most once per slot per calendar day per user.
 """
 from __future__ import annotations
 
@@ -16,9 +16,10 @@ from app.db import SessionLocal
 from app.models import Digest, Preference, User
 from app.services.digest import create_digest
 from app.services.kakao import send_digest_via_kakao
+from app.services.send_times import format_hm, parse_send_times_raw, slot_set
 
 scheduler = AsyncIOScheduler()
-_sent_today: set[tuple[int, str]] = set()
+_sent_slots: set[tuple[int, str, str]] = set()
 
 
 async def tick_morning_digests() -> None:
@@ -36,32 +37,44 @@ async def tick_morning_digests() -> None:
                 continue
             tz = ZoneInfo(pref.timezone or "Asia/Seoul")
             now = datetime.now(tz)
-            if now.hour != pref.send_hour or now.minute != pref.send_minute:
+            slots = slot_set(
+                parse_send_times_raw(pref.send_times, hour=pref.send_hour, minute=pref.send_minute)
+            )
+            if (now.hour, now.minute) not in slots:
                 continue
 
-            day_key = (user.id, now.date().isoformat())
-            if day_key in _sent_today:
+            slot_label = format_hm(now.hour, now.minute)
+            day = now.date().isoformat()
+            slot_key = (user.id, day, slot_label)
+            if slot_key in _sent_slots:
                 continue
 
-            # Also skip if we already have a successful send today
             existing = db.scalars(
                 select(Digest)
                 .where(Digest.user_id == user.id, Digest.status == "sent")
                 .order_by(Digest.created_at.desc())
-                .limit(5)
+                .limit(20)
             ).all()
-            if any(d.sent_at and d.sent_at.astimezone(tz).date() == now.date() for d in existing):
-                _sent_today.add(day_key)
+            already = False
+            for d in existing:
+                if d.sent_at is None:
+                    continue
+                local = d.sent_at.astimezone(tz)
+                if local.date() == now.date() and local.hour == now.hour and local.minute == now.minute:
+                    already = True
+                    break
+            if already:
+                _sent_slots.add(slot_key)
                 continue
 
             digest = create_digest(db, user, pref, status="draft")
-            ok, err = await send_digest_via_kakao(user, digest.title, digest.body)
+            ok, err = await send_digest_via_kakao(user, digest.title, digest.body, db=db)
             digest.status = "sent" if ok else "failed"
             digest.error_message = err
             digest.sent_at = datetime.now(timezone.utc) if ok else None
             db.commit()
             if ok:
-                _sent_today.add(day_key)
+                _sent_slots.add(slot_key)
     finally:
         db.close()
 
