@@ -26,6 +26,22 @@ SAMPLE_RSS = """<?xml version="1.0" encoding="UTF-8"?>
 </rss>
 """
 
+# YouTube RSS keeps items only when media:statistics views >= 10_000.
+SAMPLE_YOUTUBE_ATOM = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">
+  <title>Sample channel</title>
+  <entry>
+    <title>Popular sample video</title>
+    <link href="https://www.youtube.com/watch?v=hitfixture01"/>
+    <media:group>
+      <media:community>
+        <media:statistics views="25000"/>
+      </media:community>
+    </media:group>
+  </entry>
+</feed>
+"""
+
 HTML_FIXTURES: dict[str, str] = {
     "github-trending": '<html><body><a href="/octocat/hello-world">Hello World Repo</a></body></html>',
     "geeksforgeeks": '<html><body><a href="https://www.geeksforgeeks.org/python-tutorial/">Python Tutorial Guide</a></body></html>',
@@ -54,6 +70,8 @@ def _ok_fetch(url: str, **kwargs: object) -> FetchResult:
     site_id = _html_site_for_url(url)
     if site_id:
         return FetchResult(url, True, 200, HTML_FIXTURES[site_id], "")
+    if "youtube.com" in url:
+        return FetchResult(url, True, 200, SAMPLE_YOUTUBE_ATOM, "")
     return FetchResult(url, True, 200, SAMPLE_RSS, "")
 
 
@@ -62,10 +80,15 @@ def _fail_fetch(url: str, **kwargs: object) -> FetchResult:
 
 
 @pytest.fixture(autouse=True)
-def _clear_probe_cache():
+def _clear_probe_cache(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("YOUTUBE_API_KEY", "")
+    from app.config import get_settings
+
+    get_settings.cache_clear()
     probe_mod._cache.clear()
     yield
     probe_mod._cache.clear()
+    get_settings.cache_clear()
 
 
 @pytest.mark.parametrize("site_id", sorted(collector_site_ids()))
