@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass, field
 from datetime import datetime
 from urllib.parse import quote_plus
 from zoneinfo import ZoneInfo
@@ -225,10 +226,12 @@ def _llm_curate(
     user: User,
     pref: Preference,
     candidates: list[SourceItem],
-) -> tuple[str, str, list[dict[str, str]]] | None:
+) -> tuple[tuple[str, str, list[dict[str, str]]] | None, str, str]:
     settings = get_settings()
-    if not settings.llm_configured or not candidates:
-        return None
+    if not settings.llm_configured:
+        return None, "llm_not_configured", ""
+    if not candidates:
+        return None, "no_candidates", ""
 
     topics = ", ".join(_topic_list(pref)) or "일반"
     custom = _customization(pref) or "(없음)"
@@ -273,13 +276,13 @@ def _llm_curate(
         max_tokens=1100 if insight_on else 900,
     )
     if not text:
-        return None
+        return None, "empty_response", ""
     try:
         text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.I | re.M)
         data = json.loads(text)
         items = data.get("items") or []
         if len(items) < 3:
-            return None
+            return None, "fewer_than_3_items", text[:2000]
         allowed = {c.url for c in candidates}
         cleaned: list[dict[str, str]] = []
         for raw in items[:3]:
@@ -303,7 +306,7 @@ def _llm_curate(
                     row["insight_url"] = insight_url[:500]
             cleaned.append(row)
         if len(cleaned) < 3:
-            return None
+            return None, "fewer_than_3_valid_urls", text[:2000]
         cleaned = _attach_insights(cleaned, pref=pref, candidates=candidates)
         topics_list = _topic_list(pref)
         for i, row in enumerate(cleaned):
@@ -315,18 +318,30 @@ def _llm_curate(
             weekday = ["월", "화", "수", "목", "금", "토", "일"][now.weekday()]
             title = f"오늘의 3 · {now.month}/{now.day} ({weekday})"
         body = _format_body(user.display_name or "당신", cleaned, pref, topics_list)
-        return title, body, cleaned
+        return (title, body, cleaned), "", text[:2000]
     except Exception:
-        return None
+        return None, "invalid_json", (text or "")[:2000]
 
 
 def _source_list(pref: Preference) -> list[str]:
     return [s.strip() for s in (pref.sources or "").split(",") if s.strip()]
 
 
-def generate_digest_content(
-    db: Session, user: User, pref: Preference
-) -> tuple[str, str, list[dict[str, str]]]:
+@dataclass
+class DigestPreview:
+    title: str
+    body: str
+    items: list[dict[str, str]]
+    curator: str
+    llm_configured: bool
+    llm_skip_reason: str
+    llm_raw: str
+    candidates: list[SourceItem] = field(default_factory=list)
+    topics: list[str] = field(default_factory=list)
+    sources: list[str] = field(default_factory=list)
+
+
+def build_digest_preview(db: Session, user: User, pref: Preference) -> DigestPreview:
     topics = _topic_list(pref)
     sites = _source_list(pref)
     now = datetime.now(ZoneInfo(SEOUL))
@@ -334,25 +349,53 @@ def generate_digest_content(
     seed = f"{user.id}:{now.date().isoformat()}:{','.join(topics)}:{','.join(sites)}"
     name = user.display_name or "당신"
     title = f"오늘의 3 · {now.month}/{now.day} ({weekday})"
+    settings = get_settings()
 
     candidates = gather_candidates(topics, preferred_sites=sites)
-    llm = _llm_curate(db, user, pref, candidates)
+    llm, skip_reason, llm_raw = _llm_curate(db, user, pref, candidates)
     if llm:
-        return llm
+        llm_title, llm_body, llm_items = llm
+        return DigestPreview(
+            title=llm_title,
+            body=llm_body,
+            items=llm_items,
+            curator="llm",
+            llm_configured=settings.llm_configured,
+            llm_skip_reason="",
+            llm_raw=llm_raw,
+            candidates=candidates,
+            topics=topics,
+            sources=sites,
+        )
 
-    items = _attach_insights(
-        _heuristic_pick(candidates, seed) or _static_fallback(topics, seed),
-        pref=pref,
-        candidates=candidates,
-    )
-    # attach topic labels for clients
+    picked = _heuristic_pick(candidates, seed)
+    curator = "heuristic" if picked else "static"
+    items = _attach_insights(picked or _static_fallback(topics, seed), pref=pref, candidates=candidates)
     labeled: list[dict[str, str]] = []
     for i, item in enumerate(items):
         row = dict(item)
         topic = topics[i % len(topics)] if topics else item.get("hint", "")
         row["topic"] = topic.replace("/", " · ") if topic else ""
         labeled.append(row)
-    return title, _format_body(name, labeled, pref, topics), labeled
+    return DigestPreview(
+        title=title,
+        body=_format_body(name, labeled, pref, topics),
+        items=labeled,
+        curator=curator,
+        llm_configured=settings.llm_configured,
+        llm_skip_reason=skip_reason,
+        llm_raw=llm_raw,
+        candidates=candidates,
+        topics=topics,
+        sources=sites,
+    )
+
+
+def generate_digest_content(
+    db: Session, user: User, pref: Preference
+) -> tuple[str, str, list[dict[str, str]]]:
+    preview = build_digest_preview(db, user, pref)
+    return preview.title, preview.body, preview.items
 
 
 def create_digest(

@@ -161,6 +161,35 @@ class PreviewRequest(BaseModel):
     send: bool = False
 
 
+class AdminDigestPreviewRequest(BaseModel):
+    user_id: int
+
+
+class DigestCandidateOut(BaseModel):
+    kind: str
+    title: str
+    url: str
+    summary: str = ""
+    source: str = ""
+
+
+class AdminDigestPreviewOut(BaseModel):
+    user_id: int
+    email: str
+    display_name: str
+    curator: str
+    llm_configured: bool
+    llm_skip_reason: str = ""
+    llm_raw: str = ""
+    topics: list[str] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)
+    title: str
+    body: str
+    items: list[DigestItemOut] = Field(default_factory=list)
+    candidates: list[DigestCandidateOut] = Field(default_factory=list)
+    sent_to_kakao: bool = False
+
+
 class KakaoStatusOut(BaseModel):
     configured: bool
     connected: bool

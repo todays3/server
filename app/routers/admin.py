@@ -18,10 +18,15 @@ from app.schemas import (
     AdminUsageSummary,
     AdminUserDetail,
     AdminUserOut,
+    DigestCandidateOut,
+    DigestItemOut,
     SourceFeedProbeOut,
     SourceProbeListOut,
     SourceSiteProbeOut,
+    AdminDigestPreviewOut,
+    AdminDigestPreviewRequest,
 )
+from app.services.digest import build_digest_preview
 from app.services.send_times import parse_send_times_raw
 from app.services.source_probe import list_probe_snapshot, probe_all_sites, probe_site, summarize
 from app.services.sources import collector_site_ids
@@ -388,3 +393,56 @@ def run_one_source_probe(
     if site_id not in collector_site_ids():
         raise HTTPException(status_code=404, detail="알 수 없는 수집 소스입니다")
     return _site_out(probe_site(site_id))
+
+
+@router.post("/digests/preview", response_model=AdminDigestPreviewOut)
+def preview_digest_for_user(
+    payload: AdminDigestPreviewRequest,
+    admin: Annotated[User, Depends(get_admin_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> AdminDigestPreviewOut:
+    _ = admin
+    user = db.get(User, payload.user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다")
+    pref = user.preference
+    if pref is None:
+        raise HTTPException(status_code=400, detail="이 사용자에게 설정이 없습니다")
+    preview = build_digest_preview(db, user, pref)
+    db.commit()
+    return AdminDigestPreviewOut(
+        user_id=user.id,
+        email=user.email,
+        display_name=user.display_name,
+        curator=preview.curator,
+        llm_configured=preview.llm_configured,
+        llm_skip_reason=preview.llm_skip_reason,
+        llm_raw=preview.llm_raw,
+        topics=preview.topics,
+        sources=preview.sources,
+        title=preview.title,
+        body=preview.body,
+        items=[
+            DigestItemOut(
+                kind=str(item.get("kind") or "아티클"),
+                title=str(item.get("title") or ""),
+                blurb=str(item.get("blurb") or item.get("summary") or ""),
+                url=str(item.get("url") or ""),
+                topic=str(item.get("topic") or item.get("hint") or ""),
+                insight_q=str(item.get("insight_q") or ""),
+                insight_url=str(item.get("insight_url") or ""),
+            )
+            for item in preview.items
+        ],
+        candidates=[
+            DigestCandidateOut(
+                kind=c.kind,
+                title=c.title,
+                url=c.url,
+                summary=c.summary,
+                source=c.source,
+            )
+            for c in preview.candidates
+        ],
+        sent_to_kakao=False,
+    )
