@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     # Auth endpoint rate limit (per IP + path)
     rate_limit_auth_max: int = 30
     rate_limit_auth_window_seconds: float = 60.0
+    rate_limit_hooks_max: int = 60
+    rate_limit_hooks_window_seconds: float = 60.0
+
+    # Android Tasker/MacroDroid → POST /api/v1/hooks/notifications
+    # Empty secret disables the endpoint (503).
+    flash_webhook_secret: str = ""
+    flash_alert_user_email: str = ""
 
     @property
     def allowed_cors_origins(self) -> list[str]:
@@ -88,6 +95,14 @@ class Settings(BaseSettings):
             return "gpt-4o-mini"
         # Groq free-tier default
         return "llama-3.3-70b-versatile"
+
+    @property
+    def flash_webhook_configured(self) -> bool:
+        return bool(self.flash_webhook_secret)
+
+    @property
+    def flash_alert_target_email(self) -> str:
+        return (self.flash_alert_user_email or self.admin_email).strip().lower()
 
     @property
     def api_prefix(self) -> str:

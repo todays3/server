@@ -20,6 +20,8 @@ build/
 
 # Local SQLite
 *.db
+*.db-shm
+*.db-wal
 *.sqlite3
 
 # Test / lint / type caches
@@ -30,6 +32,7 @@ build/
 .coverage.*
 htmlcov/
 coverage.xml
+coverage.json
 .tox/
 .hypothesis/
 

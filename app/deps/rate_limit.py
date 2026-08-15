@@ -53,3 +53,15 @@ def rate_limit_auth(
         max_calls=settings.rate_limit_auth_max,
         window_seconds=settings.rate_limit_auth_window_seconds,
     )
+
+
+def rate_limit_hooks(
+    request: Request,
+    ip: Annotated[str, Depends(client_ip)],
+) -> None:
+    settings = get_settings()
+    _limiter.check(
+        f"hooks:{ip}:{request.url.path}",
+        max_calls=settings.rate_limit_hooks_max,
+        window_seconds=settings.rate_limit_hooks_window_seconds,
+    )

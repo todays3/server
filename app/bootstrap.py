@@ -7,12 +7,13 @@ from sqlalchemy.orm import Session
 
 from app.auth import hash_password
 from app.config import get_settings
-from app.db import SessionLocal, engine
+from app.db import SessionLocal, engine, apply_sqlite_pragmas
 from app.models import Preference, User
 
 
 def ensure_schema() -> None:
     """Add new columns to existing SQLite DBs created before approval/OAuth flow."""
+    apply_sqlite_pragmas()
     with engine.begin() as conn:
         rows = conn.execute(text("PRAGMA table_info(users)")).fetchall()
         if not rows:
@@ -51,11 +52,47 @@ def ensure_schema() -> None:
                     text("ALTER TABLE preferences ADD COLUMN insight_questions BOOLEAN DEFAULT 0")
                 )
 
+        crawl_rows = conn.execute(text("PRAGMA table_info(crawl_runs)")).fetchall()
+        if crawl_rows:
+            crawl_cols = {row[1] for row in crawl_rows}
+            int_cols = (
+                "trigger_ms",
+                "crawl_ms",
+                "aggregation_ms",
+                "llm_ms",
+                "format_ms",
+                "wait_ms",
+                "send_ms",
+                "total_ms",
+                "lead_ms",
+            )
+            for col in int_cols:
+                if col not in crawl_cols:
+                    conn.execute(text(f"ALTER TABLE crawl_runs ADD COLUMN {col} INTEGER DEFAULT 0"))
+            if "curator" not in crawl_cols:
+                conn.execute(text("ALTER TABLE crawl_runs ADD COLUMN curator VARCHAR(32) DEFAULT ''"))
+            if "llm_skip_reason" not in crawl_cols:
+                conn.execute(
+                    text("ALTER TABLE crawl_runs ADD COLUMN llm_skip_reason VARCHAR(64) DEFAULT ''")
+                )
+            if "ready_at" not in crawl_cols:
+                conn.execute(text("ALTER TABLE crawl_runs ADD COLUMN ready_at DATETIME"))
+            if "sent_at" not in crawl_cols:
+                conn.execute(text("ALTER TABLE crawl_runs ADD COLUMN sent_at DATETIME"))
+
         dig_rows = conn.execute(text("PRAGMA table_info(digests)")).fetchall()
         if dig_rows:
             dig_cols = {row[1] for row in dig_rows}
             if "items_json" not in dig_cols:
                 conn.execute(text("ALTER TABLE digests ADD COLUMN items_json TEXT DEFAULT '[]'"))
+
+        kakao_rows = conn.execute(text("PRAGMA table_info(kakao_accounts)")).fetchall()
+        if kakao_rows:
+            kakao_cols = {row[1] for row in kakao_rows}
+            if "access_expires_at" not in kakao_cols:
+                conn.execute(text("ALTER TABLE kakao_accounts ADD COLUMN access_expires_at DATETIME"))
+            if "refresh_expires_at" not in kakao_cols:
+                conn.execute(text("ALTER TABLE kakao_accounts ADD COLUMN refresh_expires_at DATETIME"))
 
 
 def _ensure_user(

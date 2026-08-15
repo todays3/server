@@ -8,6 +8,7 @@ Docs:
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 import httpx
@@ -28,6 +29,8 @@ OAUTH_SCOPES = "talk_message,profile_nickname,account_email"
 
 # Kakao text template hard limit
 MEMO_TEXT_LIMIT = 1000
+# Refresh before send if access token is missing expiry or expires within this window.
+ACCESS_REFRESH_SKEW = timedelta(minutes=10)
 
 
 def build_authorize_url(state: str, *, prompt: str | None = None) -> str:
@@ -111,6 +114,40 @@ def parse_profile(profile: dict) -> tuple[str, str, str | None]:
     return kakao_id, nickname, email_norm
 
 
+def apply_token_payload(
+    account: KakaoAccount,
+    payload: dict,
+    *,
+    now: datetime | None = None,
+) -> None:
+    """Copy Kakao token JSON onto the account, including expiry timestamps."""
+    stamp = now or datetime.now(timezone.utc)
+    access = str(payload.get("access_token") or "")
+    if access:
+        account.access_token = access
+        expires_in = payload.get("expires_in")
+        if expires_in is not None:
+            account.access_expires_at = stamp + timedelta(seconds=int(expires_in))
+    refresh = str(payload.get("refresh_token") or "")
+    if refresh:
+        account.refresh_token = refresh
+        refresh_expires_in = payload.get("refresh_token_expires_in")
+        if refresh_expires_in is not None:
+            account.refresh_expires_at = stamp + timedelta(seconds=int(refresh_expires_in))
+
+
+def access_token_needs_refresh(account: KakaoAccount, *, now: datetime | None = None) -> bool:
+    if not account.refresh_token:
+        return False
+    if account.access_expires_at is None:
+        return True
+    stamp = now or datetime.now(timezone.utc)
+    expires = account.access_expires_at
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    return expires <= stamp + ACCESS_REFRESH_SKEW
+
+
 def upsert_kakao_account(
     db: Session,
     user: User,
@@ -118,14 +155,20 @@ def upsert_kakao_account(
     kakao_id: str,
     access_token: str,
     refresh_token: str,
+    expires_in: int | None = None,
+    refresh_token_expires_in: int | None = None,
 ) -> KakaoAccount:
     account = user.kakao
     if account is None:
         account = KakaoAccount(user_id=user.id, kakao_id=kakao_id)
         db.add(account)
     account.kakao_id = kakao_id
-    account.access_token = access_token
-    account.refresh_token = refresh_token or account.refresh_token
+    payload: dict = {"access_token": access_token, "refresh_token": refresh_token}
+    if expires_in is not None:
+        payload["expires_in"] = expires_in
+    if refresh_token_expires_in is not None:
+        payload["refresh_token_expires_in"] = refresh_token_expires_in
+    apply_token_payload(account, payload)
     db.commit()
     db.refresh(account)
     return account
@@ -144,6 +187,8 @@ def resolve_or_create_oauth_user(
     email: str | None,
     access_token: str,
     refresh_token: str,
+    expires_in: int | None = None,
+    refresh_token_expires_in: int | None = None,
 ) -> tuple[User, bool]:
     """Upsert user from Kakao identity. Returns (user, created)."""
     settings = get_settings()
@@ -155,6 +200,8 @@ def resolve_or_create_oauth_user(
             kakao_id=kakao_id,
             access_token=access_token,
             refresh_token=refresh_token,
+            expires_in=expires_in,
+            refresh_token_expires_in=refresh_token_expires_in,
         )
         if display_name and not existing.display_name:
             existing.display_name = display_name
@@ -172,6 +219,8 @@ def resolve_or_create_oauth_user(
             kakao_id=kakao_id,
             access_token=access_token,
             refresh_token=refresh_token,
+            expires_in=expires_in,
+            refresh_token_expires_in=refresh_token_expires_in,
         )
         return by_email, False
 
@@ -198,6 +247,8 @@ def resolve_or_create_oauth_user(
         kakao_id=kakao_id,
         access_token=access_token,
         refresh_token=refresh_token,
+        expires_in=expires_in,
+        refresh_token_expires_in=refresh_token_expires_in,
     )
     db.refresh(user)
     return user, True
@@ -315,13 +366,20 @@ async def _refresh_user_token(db: Session, user: User) -> str:
     access = str(token.get("access_token") or "")
     if not access:
         raise RuntimeError("Kakao refresh did not return access_token")
-    new_refresh = str(token.get("refresh_token") or "") or account.refresh_token
-    account.access_token = access
-    account.refresh_token = new_refresh
+    apply_token_payload(account, token)
     db.add(account)
     db.commit()
     db.refresh(account)
-    return access
+    return account.access_token
+
+
+async def ensure_fresh_access_token(db: Session, user: User) -> str:
+    account = user.kakao
+    if account is None or not account.access_token:
+        raise RuntimeError("Kakao account is not connected")
+    if access_token_needs_refresh(account):
+        return await _refresh_user_token(db, user)
+    return account.access_token
 
 
 async def send_digest_via_kakao(
@@ -339,6 +397,12 @@ async def send_digest_via_kakao(
         return False, "Kakao account is not connected"
 
     access = user.kakao.access_token
+    if db is not None:
+        try:
+            access = await ensure_fresh_access_token(db, user)
+        except Exception as refresh_exc:  # noqa: BLE001
+            return False, f"token refresh failed: {refresh_exc}"
+
     try:
         await send_memo_to_me(access, title, body)
         return True, ""

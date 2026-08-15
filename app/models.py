@@ -56,6 +56,8 @@ class KakaoAccount(Base):
     access_token: Mapped[str] = mapped_column(Text, default="")
     refresh_token: Mapped[str] = mapped_column(Text, default="")
     connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    access_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    refresh_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     user: Mapped[User] = relationship(back_populates="kakao")
 
@@ -76,6 +78,37 @@ class Digest(Base):
     items_json: Mapped[str] = mapped_column(Text, default="[]")
 
     user: Mapped[User] = relationship(back_populates="digests")
+
+
+class CrawlRun(Base):
+    """One crawl snapshot (kind counts) for admin review."""
+
+    __tablename__ = "crawl_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    digest_id: Mapped[int | None] = mapped_column(ForeignKey("digests.id"), nullable=True)
+    # schedule | send_now | preview | admin_preview
+    trigger: Mapped[str] = mapped_column(String(32), default="schedule", index=True)
+    slot_label: Mapped[str] = mapped_column(String(16), default="")
+    kinds_json: Mapped[str] = mapped_column(Text, default="{}")
+    total_count: Mapped[int] = mapped_column(Integer, default=0)
+    trigger_ms: Mapped[int] = mapped_column(Integer, default=0)
+    crawl_ms: Mapped[int] = mapped_column(Integer, default=0)
+    aggregation_ms: Mapped[int] = mapped_column(Integer, default=0)
+    llm_ms: Mapped[int] = mapped_column(Integer, default=0)
+    format_ms: Mapped[int] = mapped_column(Integer, default=0)
+    wait_ms: Mapped[int] = mapped_column(Integer, default=0)
+    send_ms: Mapped[int] = mapped_column(Integer, default=0)
+    total_ms: Mapped[int] = mapped_column(Integer, default=0)
+    lead_ms: Mapped[int] = mapped_column(Integer, default=0)
+    curator: Mapped[str] = mapped_column(String(32), default="")
+    llm_skip_reason: Mapped[str] = mapped_column(String(64), default="")
+    ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    user: Mapped[User] = relationship()
 
 
 class LlmUsage(Base):

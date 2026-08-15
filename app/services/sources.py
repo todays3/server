@@ -2,7 +2,8 @@
 
 Prefer native RSS/Atom. When a site has no usable feed (or the feed fails),
 fall back to polite public listing/search HTML parsing — no login, no CAPTCHA
-bypass, no anti-bot evasion. Soft-fail on 403/timeouts.
+bypass, no anti-bot evasion. Soft-fail on 403/timeouts. Requests are
+per-host throttled and respect robots.txt.
 """
 
 from __future__ import annotations
@@ -13,12 +14,6 @@ from html.parser import HTMLParser
 from urllib.parse import quote_plus, urljoin, urlparse
 
 import feedparser
-import httpx
-
-USER_AGENT = (
-    "Oday3Bot/1.0 (+https://localhost; personal study digest; "
-    "contact=local-dev)"
-)
 
 
 @dataclass
@@ -132,25 +127,31 @@ class FetchResult:
     status_code: int | None
     body: str
     error: str
+    bot_risk: str = "unknown"  # clear | caution | blocked | unknown
+    bot_signal: str = ""
 
 
 def _fetch(url: str, *, timeout: float = 12.0) -> FetchResult:
-    try:
-        with httpx.Client(
-            timeout=timeout,
-            follow_redirects=True,
-            headers={
-                "User-Agent": USER_AGENT,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
-            },
-        ) as client:
-            resp = client.get(url)
-            if resp.status_code >= 400:
-                return FetchResult(url, False, resp.status_code, "", f"HTTP {resp.status_code}")
-            return FetchResult(url, True, resp.status_code, resp.text, "")
-    except Exception as exc:  # noqa: BLE001 — probe/gather soft-fail
-        return FetchResult(url, False, None, "", str(exc)[:200])
+    from app.services.polite_http import classify_bot_risk, fetch_url
+
+    status, body, error, robots_ok = fetch_url(url, timeout=timeout)
+    risk, signal = classify_bot_risk(
+        status_code=status,
+        body=body,
+        error=error,
+        robots_allowed=robots_ok,
+    )
+    http_ok = bool(robots_ok and status is not None and status < 400 and body)
+    ok = http_ok and risk != "blocked"
+    return FetchResult(
+        url,
+        ok,
+        status,
+        body if ok else (body if risk == "blocked" else ""),
+        error if not ok else "",
+        risk,
+        signal,
+    )
 
 
 def _http_get(url: str, *, timeout: float = 12.0) -> str | None:

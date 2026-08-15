@@ -78,6 +78,7 @@ def test_probe_site_succeeds_with_fixture_payload(site_id: str, monkeypatch: pyt
     assert result.feeds
     assert any(feed.ok for feed in result.feeds)
     assert any(feed.sample_titles for feed in result.feeds if feed.ok)
+    assert result.bot_risk == "clear"
 
 
 @pytest.mark.parametrize("site_id", sorted(collector_site_ids()))
@@ -88,6 +89,8 @@ def test_probe_site_reports_http_failure(site_id: str, monkeypatch: pytest.Monke
     assert result.feeds
     assert all(not feed.ok for feed in result.feeds)
     assert all("403" in feed.error for feed in result.feeds)
+    assert result.bot_risk == "blocked"
+    assert all(feed.bot_risk == "blocked" for feed in result.feeds)
 
 
 def test_probe_all_sites_covers_catalog(monkeypatch: pytest.MonkeyPatch):

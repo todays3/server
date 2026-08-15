@@ -45,7 +45,8 @@ def test_format_body_includes_insight_when_enabled():
             "insight_url": "https://b.example",
         }
     ]
-    body = _format_body("테스트", items, pref, ["경제/주식"])
+    body = _format_body("테스트", items, pref, ["경제/주식"], reviewed_count=12)
     assert "✨ 인사이트:" in body
     assert "https://b.example" in body
     assert "📰" in body
+    assert body.splitlines()[0] == "12개의 아티클을 종합 검수했습니다"
