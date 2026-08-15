@@ -1,16 +1,35 @@
 from functools import lru_cache
+from os import getenv
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_SERVER_ROOT = Path(__file__).resolve().parent.parent
+
+
+def env_mode() -> str:
+    raw = getenv("APP_ENV", "development").strip().lower()
+    if raw in ("prod", "production"):
+        return "production"
+    return "development"
+
+
+def env_file_paths() -> tuple[str, ...]:
+    """Load only `.env.development` or `.env.production`. Plain `.env` is unused."""
+    path = _SERVER_ROOT / f".env.{env_mode()}"
+    return (str(path),) if path.is_file() else ()
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(env_file_encoding="utf-8", extra="ignore")
 
     app_name: str = "오늘의 3"
     api_version: str = "v1"
     secret_key: str = "dev-secret-change-me"
     database_url: str = "sqlite:///./tome.db"
     frontend_origin: str = "http://localhost:5173"
+    # Extra CORS allowlist (comma-separated). frontend_origin is always included.
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     default_timezone: str = "Asia/Seoul"
 
     # Seeded on startup if missing
@@ -37,6 +56,11 @@ class Settings(BaseSettings):
     # Auth endpoint rate limit (per IP + path)
     rate_limit_auth_max: int = 30
     rate_limit_auth_window_seconds: float = 60.0
+
+    @property
+    def allowed_cors_origins(self) -> list[str]:
+        extras = [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+        return list(dict.fromkeys([self.frontend_origin, *extras]))
 
     @property
     def kakao_configured(self) -> bool:
@@ -72,4 +96,4 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    return Settings(_env_file=env_file_paths())
