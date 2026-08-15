@@ -2,20 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
+import json
 import pytest
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
 from jose import jwt
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from app.auth import create_access_token, hash_password
 from app.config import get_settings
-from app.db import Base, get_db
-from app.main import app
 from app.models import Digest, KakaoAccount, Preference, User
 from app.routers.auth import _encode_oauth_state
 from app.services.oauth_tickets import issue_login_ticket
@@ -23,15 +18,8 @@ from app.services.sources import SourceItem
 
 
 @pytest.fixture()
-def db_session():
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    Base.metadata.create_all(bind=engine)
-    session = TestingSession()
+def db_session(db_engine):
+    session = sessionmaker(autocommit=False, autoflush=False, bind=db_engine)()
     admin = User(
         email="admin@example.com",
         display_name="관리자",
@@ -70,20 +58,8 @@ def db_session():
         yield session
     finally:
         session.close()
-        Base.metadata.drop_all(bind=engine)
-        engine.dispose()
 
 
-@pytest_asyncio.fixture()
-async def client(db_session) -> AsyncIterator[AsyncClient]:
-    def _override_db():
-        yield db_session
-
-    app.dependency_overrides[get_db] = _override_db
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
-    app.dependency_overrides.clear()
 
 
 def _user(db_session, email: str) -> User:
@@ -343,6 +319,79 @@ async def test_digests_list_and_preview(client: AsyncClient, db_session, monkeyp
     sent = await client.post("/api/v1/digests/preview", headers=headers, json={"send": True})
     assert sent.status_code == 200
     assert sent.json()["status"] == "sent"
+
+    streamed = await client.post(
+        "/api/v1/digests/preview",
+        headers={**headers, "Accept": "application/x-ndjson"},
+        json={"send": True},
+    )
+    assert streamed.status_code == 200
+    events = [json.loads(line) for line in streamed.text.strip().split("\n") if line.strip()]
+    steps = [row["step"] for row in events if row.get("type") == "step"]
+    assert "crawl" in steps
+    assert "curate" in steps
+    assert "send" in steps
+    done = next(row for row in events if row.get("type") == "done")
+    assert done["digest"]["status"] == "sent"
+
+    async def send_fail(*_a, **_k):
+        return False, "insufficient scopes."
+
+    monkeypatch.setattr("app.services.delivery.send_digest_via_kakao", send_fail)
+    failed = await client.post(
+        "/api/v1/digests/preview",
+        headers={**headers, "Accept": "application/x-ndjson"},
+        json={"send": True},
+    )
+    assert failed.status_code == 200
+    fail_events = [json.loads(line) for line in failed.text.strip().split("\n") if line.strip()]
+    err = next(row for row in fail_events if row.get("type") == "error")
+    assert err["step"] == "send"
+    assert "insufficient" in err["message"]
+
+
+@pytest.mark.asyncio
+async def test_preview_stream_send_does_not_lazy_load_detached_user(
+    client: AsyncClient, db_session, monkeypatch
+):
+    member = _user(db_session, "user@example.com")
+    db_session.add(
+        KakaoAccount(
+            user_id=member.id,
+            kakao_id="k-send",
+            access_token="access",
+            refresh_token="refresh",
+            access_expires_at=datetime.now(timezone.utc) + timedelta(hours=4),
+        )
+    )
+    db_session.commit()
+    items = [
+        SourceItem(kind="아티클", title="A", url="https://a.example", summary="sa", source="s"),
+        SourceItem(kind="유튜브", title="B", url="https://b.example", summary="sb", source="s"),
+        SourceItem(kind="커뮤니티", title="C", url="https://c.example", summary="sc", source="s"),
+    ]
+    monkeypatch.setattr("app.services.digest.gather_candidates", lambda *a, **k: items)
+
+    async def memo_ok(*_a, **_k):
+        return [{}]
+
+    monkeypatch.setattr("app.services.kakao.send_memo_to_me", memo_ok)
+    monkeypatch.setenv("KAKAO_REST_API_KEY", "test-key")
+    get_settings.cache_clear()
+    try:
+        streamed = await client.post(
+            "/api/v1/digests/preview",
+            headers={**_bearer(member), "Accept": "application/x-ndjson"},
+            json={"send": True},
+        )
+    finally:
+        get_settings.cache_clear()
+    assert streamed.status_code == 200
+    events = [json.loads(line) for line in streamed.text.strip().split("\n") if line.strip()]
+    err = next((row for row in events if row.get("type") == "error"), None)
+    assert err is None, err
+    done = next(row for row in events if row.get("type") == "done")
+    assert done["digest"]["status"] == "sent"
 
 
 @pytest.mark.asyncio

@@ -2,31 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-
 import pytest
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy import create_engine
+from httpx import AsyncClient
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from app.auth import create_access_token, hash_password
-from app.db import Base, get_db
-from app.main import app
 from app.models import Preference, User
 
 
 @pytest.fixture()
-def db_session():
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    Base.metadata.create_all(bind=engine)
-    session = TestingSession()
+def db_session(db_engine):
+    session = sessionmaker(autocommit=False, autoflush=False, bind=db_engine)()
 
     admin = User(
         email="admin@example.com",
@@ -51,23 +37,6 @@ def db_session():
         yield session
     finally:
         session.close()
-        Base.metadata.drop_all(bind=engine)
-        engine.dispose()
-
-
-@pytest_asyncio.fixture()
-async def client(db_session) -> AsyncIterator[AsyncClient]:
-    def _override_db():
-        try:
-            yield db_session
-        finally:
-            pass
-
-    app.dependency_overrides[get_db] = _override_db
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
-    app.dependency_overrides.clear()
 
 
 @pytest.mark.asyncio
@@ -172,6 +141,7 @@ async def test_kakao_start_when_configured(client: AsyncClient, monkeypatch):
     assert "kauth.kakao.com/oauth/authorize" in data["url"]
     assert "client_id=rest-key" in data["url"]
     assert "talk_message" in data["url"]
+    assert "account_email" not in data["url"]
 
 
 @pytest.mark.asyncio
@@ -186,7 +156,7 @@ async def test_kakao_callback_consent_denied(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_kakao_callback_creates_pending_user(client: AsyncClient, db_session, monkeypatch):
+async def test_kakao_callback_creates_approved_user(client: AsyncClient, db_session, monkeypatch):
     from app.models import User
     from app.routers.auth import _encode_oauth_state
 
@@ -199,10 +169,10 @@ async def test_kakao_callback_creates_pending_user(client: AsyncClient, db_sessi
     )
     assert res.status_code in (302, 303, 307)
     location = res.headers["location"]
-    assert "status=pending" in location
-    assert "%EB%AF%BC%EC%88%98" in location or "name=" in location
+    assert "oauth_ticket=" in location
+    assert "status=pending" not in location
     user = db_session.query(User).filter(User.email == "kakao.4242@users.oday3.app").one()
-    assert user.status == "pending"
+    assert user.status == "approved"
     assert user.kakao is not None
     assert user.kakao.kakao_id == "4242"
 

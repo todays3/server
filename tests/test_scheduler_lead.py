@@ -26,6 +26,7 @@ async def test_tick_prepares_early_then_sends_at_slot(tmp_path, monkeypatch):
     Base.metadata.create_all(engine)
     db = TestingSession()
     tz = ZoneInfo("Asia/Seoul")
+    today = datetime.now(tz)
     user = User(
         email="lead@example.com",
         display_name="선행",
@@ -48,7 +49,7 @@ async def test_tick_prepares_early_then_sends_at_slot(tmp_path, monkeypatch):
     db.commit()
     db.close()
 
-    clock = {"now": datetime(2026, 8, 15, 7, 22, tzinfo=tz)}
+    clock = {"now": today.replace(hour=7, minute=22, second=0, microsecond=0)}
     monkeypatch.setattr(sch, "SessionLocal", TestingSession)
     monkeypatch.setattr(sch, "aware_now", lambda _tz: clock["now"])
     monkeypatch.setattr(sch, "suggested_lead_minutes_from_db", lambda _db: 8)
@@ -78,7 +79,7 @@ async def test_tick_prepares_early_then_sends_at_slot(tmp_path, monkeypatch):
     assert drafts[0].status == "draft"
     assert sends == []
 
-    clock["now"] = datetime(2026, 8, 15, 7, 30, tzinfo=tz)
+    clock["now"] = today.replace(hour=7, minute=30, second=0, microsecond=0)
     await sch.tick_morning_digests()
     db = TestingSession()
     rows = db.query(Digest).all()

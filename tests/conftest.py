@@ -1,32 +1,34 @@
-"""Shared pytest hooks. File-local fixtures still win over these."""
+"""Shared pytest fixtures and markers.
+
+File-local `db_session` fixtures still win when a test module seeds its own users.
+"""
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Iterator
+
 import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from app.config import get_settings
-
-INTEGRATION_FILES = frozenset(
-    {
-        "test_auth_oauth.py",
-        "test_hooks_notification.py",
-        "test_admin_digest_preview.py",
-        "test_admin_source_probes.py",
-        "test_admin_overview.py",
-        "test_sources_catalog_api.py",
-        "test_prefs_api.py",
-        "test_user_flows_api.py",
-        "test_admin_crawl_runs.py",
-    }
-)
+from app.db import Base, get_db
+from app.main import app
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     for item in items:
-        if item.path.name in INTEGRATION_FILES:
-            item.add_marker(pytest.mark.integration)
-        else:
-            item.add_marker(pytest.mark.unit)
+        name = item.path.name
+        integration = (
+            name.startswith("test_admin_")
+            or name.endswith("_api.py")
+            or name in {"test_auth_oauth.py", "test_hooks_notification.py"}
+        )
+        item.add_marker(pytest.mark.integration if integration else pytest.mark.unit)
 
 
 @pytest.fixture(autouse=True)
@@ -36,3 +38,38 @@ def _roomy_rate_limits(monkeypatch):
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+@pytest.fixture()
+def db_engine() -> Iterator[Engine]:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    yield engine
+    Base.metadata.drop_all(bind=engine)
+    engine.dispose()
+
+
+@pytest.fixture()
+def db_session(db_engine: Engine) -> Iterator[Session]:
+    TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=db_engine)
+    session = TestingSession()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+@pytest_asyncio.fixture()
+async def client(db_session: Session) -> AsyncIterator[AsyncClient]:
+    def _override_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = _override_db
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        yield ac
+    app.dependency_overrides.clear()

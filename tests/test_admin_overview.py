@@ -3,30 +3,20 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy import create_engine
+from httpx import AsyncClient
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from app.auth import create_access_token, hash_password
-from app.db import Base, get_db
-from app.main import app
 from app.models import CrawlRun, LlmUsage, Preference, User
+from app.routers.admin import _daily_series, _pref_detail
 
 
 @pytest.fixture()
-def db_session():
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    Base.metadata.create_all(bind=engine)
-    session = TestingSession()
+def db_session(db_engine):
+    session = sessionmaker(autocommit=False, autoflush=False, bind=db_engine)()
 
     admin = User(
         email="admin@example.com",
@@ -76,23 +66,8 @@ def db_session():
         yield session
     finally:
         session.close()
-        Base.metadata.drop_all(bind=engine)
-        engine.dispose()
 
 
-@pytest_asyncio.fixture()
-async def client(db_session):
-    def _override_db():
-        try:
-            yield db_session
-        finally:
-            pass
-
-    app.dependency_overrides[get_db] = _override_db
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
-    app.dependency_overrides.clear()
 
 
 @pytest.mark.asyncio
@@ -115,3 +90,41 @@ async def test_admin_overview_includes_series(client: AsyncClient, db_session):
     assert body["last_run_rss_delta_bytes"] == 20971520
     assert body["runs_cpu_peak_max_percent"] == 45
     assert body["runs_rss_peak_max_bytes"] == 104857600
+
+
+def test_daily_series_filters_out_of_window_and_pref_detail_none():
+    old = datetime.now(timezone.utc) - timedelta(days=40)
+    users = [
+        SimpleNamespace(created_at=None, approved_at=None, status="approved"),
+        SimpleNamespace(created_at=old, approved_at=None, status="approved"),
+        SimpleNamespace(
+            created_at=datetime.now(timezone.utc),
+            approved_at=None,
+            status="pending",
+        ),
+    ]
+    usage = [
+        SimpleNamespace(created_at=None, total_tokens=1, prompt_tokens=1, completion_tokens=0, success=True),
+        SimpleNamespace(created_at=old, total_tokens=5, prompt_tokens=2, completion_tokens=3, success=True),
+        SimpleNamespace(
+            created_at=datetime.now(timezone.utc) + timedelta(days=400),
+            total_tokens=1,
+            prompt_tokens=0,
+            completion_tokens=0,
+            success=False,
+        ),
+    ]
+    series = _daily_series(users, usage, days=14)
+    assert len(series) == 14
+    assert _pref_detail(None) is None
+    pref = Preference(
+        topics="a,b",
+        sources="hn",
+        notes="",
+        send_times="07:30",
+        timezone="Asia/Seoul",
+        enabled=True,
+    )
+    detail = _pref_detail(pref)
+    assert detail is not None
+    assert detail.topics == ["a", "b"]

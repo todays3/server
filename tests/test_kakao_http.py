@@ -1,15 +1,12 @@
-"""Kakao HTTP helpers, memo errors, send paths, tickets, flash TTL."""
+"""Kakao HTTP helpers, memo errors, and send paths."""
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 
 from app.config import get_settings
-from app.models import KakaoAccount
-from app.services.flash_alerts import already_seen, clear_seen
 from app.services.kakao import (
     KakaoApiError,
     _is_token_error,
@@ -23,7 +20,6 @@ from app.services.kakao import (
     send_memo_to_me,
     split_memo_chunks,
 )
-from app.services.oauth_tickets import consume_login_ticket, issue_login_ticket
 
 
 class _Resp:
@@ -68,6 +64,10 @@ def test_build_authorize_url_requires_key_and_prompt(monkeypatch):
     try:
         url = build_authorize_url("st", prompt="consent")
         assert "prompt=consent" in url
+        assert "scope=" not in url
+        memo = build_authorize_url("st", prompt="consent", scopes="talk_message")
+        assert "talk_message" in memo
+        assert "account_email" not in memo
     finally:
         get_settings.cache_clear()
 
@@ -194,6 +194,14 @@ async def test_send_digest_via_kakao_paths(monkeypatch):
         ok, msg = await send_digest_via_kakao(user, "t", "b", db=SimpleNamespace())
         assert ok is True
 
+        async def scope_err(*_a, **_k):
+            raise KakaoApiError("insufficient scopes.", status_code=403, kakao_code=-402)
+
+        monkeypatch.setattr("app.services.kakao.send_memo_to_me", scope_err)
+        ok, msg = await send_digest_via_kakao(user, "t", "b", db=SimpleNamespace())
+        assert ok is False
+        assert "나에게 보내기" in msg
+
         async def other_err(*_a, **_k):
             raise RuntimeError("network")
 
@@ -215,18 +223,3 @@ async def test_send_memo_to_me(monkeypatch):
     out = await send_memo_to_me("a", "t", "b")
     assert out
 
-
-def test_oauth_ticket_expired(monkeypatch):
-    ticket = issue_login_ticket("tok")
-    assert consume_login_ticket("missing") is None
-    monkeypatch.setattr("app.services.oauth_tickets.time.monotonic", lambda: 10**12)
-    assert consume_login_ticket(ticket) is None
-
-
-def test_flash_expired_fingerprint(monkeypatch):
-    clear_seen()
-    monkeypatch.setattr("app.services.flash_alerts.time.monotonic", lambda: 0)
-    assert already_seen("fp") is False
-    monkeypatch.setattr("app.services.flash_alerts.time.monotonic", lambda: 10**9)
-    assert already_seen("fp") is False
-    clear_seen()

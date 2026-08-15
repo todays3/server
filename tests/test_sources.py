@@ -1,6 +1,6 @@
 """Source gather + catalog parity tests."""
 
-from app.catalog.ref_sites import all_site_ids, catalog_payload
+from app.catalog.ref_sites import all_site_ids, catalog_payload, groups_for_mega, site_label
 from app.services.digest import _heuristic_pick
 from app.services.sources import HtmlListSpec, SourceItem, catalog_site_ids, collector_site_ids, gather_candidates
 from app.services import sources as sources_mod
@@ -61,3 +61,8 @@ def test_html_list_parser_extracts_anchors(monkeypatch):
     assert len(items) == 1
     assert items[0].url == "https://github.com/owner/awesome-repo"
     assert "Awesome" in items[0].title
+
+
+def test_catalog_unknown_id_echoes_and_mega_has_groups():
+    assert site_label("not-a-site") == "not-a-site"
+    assert groups_for_mega("IT")

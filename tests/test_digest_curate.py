@@ -1,0 +1,243 @@
+"""Digest heuristic pick, create_digest, and LLM curation contracts."""
+
+from __future__ import annotations
+
+import json
+
+from sqlalchemy.orm import Session
+
+from app.auth import hash_password
+from app.config import get_settings
+from app.models import Preference, User
+from app.services.digest import (
+    _format_body,
+    _heuristic_pick,
+    _llm_curate,
+    _static_fallback,
+    create_digest,
+)
+from app.services.sources import SourceItem
+
+
+def _approved_user(db: Session, email: str = "d@example.com") -> User:
+    user = User(
+        email=email,
+        display_name="",
+        password_hash=hash_password("abcdefgh"),
+        status="approved",
+    )
+    db.add(user)
+    db.flush()
+    return user
+
+
+def _cands() -> list[SourceItem]:
+    return [
+        SourceItem(kind="아티클", title="금리 연준", url="https://a.example", summary="아티클", source="아티클"),
+        SourceItem(kind="아티클", title="A2", url="https://a2.example", summary="s", source="s"),
+        SourceItem(kind="유튜브", title="B", url="https://b.example", summary="s", source="s"),
+        SourceItem(kind="커뮤니티", title="C", url="https://c.example", summary="s", source="s"),
+    ]
+
+
+def test_heuristic_pick_returns_three_or_empty():
+    picked = _heuristic_pick(_cands(), "seed")
+    assert len(picked) == 3
+    assert _heuristic_pick([], "s") == []
+
+
+def test_static_fallback_returns_three_items():
+    items = _static_fallback(["경제"], "seed")
+    assert len(items) == 3
+    assert all("입니다." in row["blurb"] or row["blurb"].endswith("습니다.") for row in items)
+
+
+def test_create_digest_without_llm_forces_seoul_timezone(db_session, monkeypatch):
+    user = _approved_user(db_session)
+    pref = Preference(
+        user_id=user.id,
+        topics="경제",
+        timezone="UTC",
+        notes="짧게",
+        insight_questions=True,
+        sources="hn",
+    )
+    db_session.add(pref)
+    db_session.commit()
+    monkeypatch.setattr("app.services.digest.gather_candidates", lambda *a, **k: _cands())
+    monkeypatch.setenv("LLM_API_KEY", "")
+    get_settings.cache_clear()
+    try:
+        digest = create_digest(db_session, user, pref, status="draft")
+        assert digest.id
+        assert pref.timezone == "Asia/Seoul"
+        body = _format_body("너", _heuristic_pick(_cands(), "seed"), pref, ["경제"])
+        assert "요청 반영" in body or "오늘의 3" in body
+    finally:
+        get_settings.cache_clear()
+
+
+def test_llm_curate_no_candidates(db_session, monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "k")
+    get_settings.cache_clear()
+    try:
+        user = _approved_user(db_session, "c0@example.com")
+        pref = Preference(user_id=user.id, topics="경제", notes="")
+        db_session.add(pref)
+        db_session.flush()
+        none, reason, _ = _llm_curate(db_session, user, pref, [])
+        assert none is None
+        assert reason == "no_candidates"
+    finally:
+        get_settings.cache_clear()
+
+
+def test_llm_curate_empty_response(db_session, monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "k")
+    get_settings.cache_clear()
+    monkeypatch.setattr("app.services.digest.llm_service.chat_completion", lambda *_a, **_k: (None, None))
+    try:
+        user = _approved_user(db_session, "c1@example.com")
+        pref = Preference(user_id=user.id, topics="경제", insight_questions=True)
+        db_session.add(pref)
+        db_session.flush()
+        none, reason, _ = _llm_curate(db_session, user, pref, _cands())
+        assert reason == "empty_response"
+    finally:
+        get_settings.cache_clear()
+
+
+def test_llm_curate_fewer_than_three_items(db_session, monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "k")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        "app.services.digest.llm_service.chat_completion",
+        lambda *_a, **_k: (
+            '{"title":"","items":[{"kind":"아티클","title":"t","blurb":"b","url":"https://nope.example"}]}',
+            None,
+        ),
+    )
+    try:
+        user = _approved_user(db_session, "c2@example.com")
+        pref = Preference(user_id=user.id, topics="경제", insight_questions=True)
+        db_session.add(pref)
+        db_session.flush()
+        none, reason, _ = _llm_curate(db_session, user, pref, _cands())
+        assert reason == "fewer_than_3_items"
+    finally:
+        get_settings.cache_clear()
+
+
+def test_llm_curate_accepts_fenced_json_and_url_prefix(db_session, monkeypatch):
+    payload = {
+        "title": "",
+        "items": [
+            {
+                "kind": "아티클",
+                "title": "t1",
+                "blurb": "b",
+                "url": "https://a.example/extra",
+                "insight_q": "q",
+                "insight_url": "https://b.example",
+            },
+            {"kind": "유튜브", "title": "t2", "blurb": "b", "url": "https://b.example"},
+            {"kind": "커뮤니티", "title": "t3", "blurb": "b", "url": "https://c.example"},
+        ],
+    }
+    monkeypatch.setenv("LLM_API_KEY", "k")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        "app.services.digest.llm_service.chat_completion",
+        lambda *_a, **_k: (f"```json\n{json.dumps(payload)}\n```", None),
+    )
+    try:
+        user = _approved_user(db_session, "c3@example.com")
+        pref = Preference(user_id=user.id, topics="경제", insight_questions=True)
+        db_session.add(pref)
+        db_session.flush()
+        result, reason, _raw = _llm_curate(db_session, user, pref, _cands())
+        assert result is not None
+        assert reason == ""
+    finally:
+        get_settings.cache_clear()
+
+
+def test_llm_curate_invalid_json(db_session, monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "k")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        "app.services.digest.llm_service.chat_completion",
+        lambda *_a, **_k: ("not-json", None),
+    )
+    try:
+        user = _approved_user(db_session, "c4@example.com")
+        pref = Preference(user_id=user.id, topics="경제", insight_questions=True)
+        db_session.add(pref)
+        db_session.flush()
+        none, reason, _ = _llm_curate(db_session, user, pref, _cands())
+        assert reason == "invalid_json"
+    finally:
+        get_settings.cache_clear()
+
+
+def test_llm_curate_rejects_unknown_urls(db_session, monkeypatch):
+    bad_urls = {
+        "title": "x",
+        "items": [
+            {"kind": "아티클", "title": "t", "blurb": "b", "url": "https://zzz.example"},
+            {"kind": "아티클", "title": "t", "blurb": "b", "url": "https://yyy.example"},
+            {"kind": "아티클", "title": "t", "blurb": "b", "url": "https://xxx.example"},
+        ],
+    }
+    monkeypatch.setenv("LLM_API_KEY", "k")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        "app.services.digest.llm_service.chat_completion",
+        lambda *_a, **_k: (json.dumps(bad_urls), None),
+    )
+    try:
+        user = _approved_user(db_session, "c5@example.com")
+        pref = Preference(user_id=user.id, topics="경제", insight_questions=True)
+        db_session.add(pref)
+        db_session.flush()
+        none, reason, _ = _llm_curate(db_session, user, pref, _cands())
+        assert reason == "fewer_than_3_valid_urls"
+    finally:
+        get_settings.cache_clear()
+
+
+def test_llm_curate_prompt_asks_for_seumnida_style(db_session, monkeypatch):
+    captured: dict[str, object] = {}
+
+    def capture(*_a, **kwargs):
+        captured["messages"] = kwargs["messages"]
+        return None, None
+
+    monkeypatch.setenv("LLM_API_KEY", "k")
+    get_settings.cache_clear()
+    monkeypatch.setattr("app.services.digest.llm_service.chat_completion", capture)
+    try:
+        user = User(
+            email="tone@example.com",
+            display_name="테스터",
+            password_hash=hash_password("abcdefgh"),
+            status="approved",
+        )
+        db_session.add(user)
+        db_session.flush()
+        pref = Preference(user_id=user.id, topics="경제", notes="")
+        db_session.add(pref)
+        db_session.flush()
+        _llm_curate(
+            db_session,
+            user,
+            pref,
+            [SourceItem(kind="아티클", title="A", url="https://a.example", summary="s", source="s")],
+        )
+    finally:
+        get_settings.cache_clear()
+
+    prompt = captured["messages"][1]["content"]
+    assert "합니다/습니다" in prompt
+    assert "큐레이터입니다" in prompt
+    assert "큐레이터다" not in prompt
