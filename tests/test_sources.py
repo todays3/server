@@ -37,6 +37,8 @@ def test_catalog_payload_shape():
     payload = catalog_payload()
     assert payload["groups"]
     assert "IT" in payload["mega_map"]
+    assert "반도체" in payload["mega_map"]
+    assert "의학" in payload["mega_map"]
     assert all("sites" in g for g in payload["groups"])
 
 
@@ -61,6 +63,31 @@ def test_html_list_parser_extracts_anchors(monkeypatch):
     assert len(items) == 1
     assert items[0].url == "https://github.com/owner/awesome-repo"
     assert "Awesome" in items[0].title
+
+
+def test_youtube_rss_keeps_only_videos_over_10k_views():
+    raw = """<?xml version="1.0"?>
+    <feed xmlns:media="http://search.yahoo.com/mrss/">
+      <entry>
+        <title>히트</title>
+        <link href="https://www.youtube.com/watch?v=hit01"/>
+        <media:group><media:community><media:statistics views="10001"/></media:community></media:group>
+      </entry>
+      <entry>
+        <title>저조회</title>
+        <link href="https://www.youtube.com/watch?v=low01"/>
+        <media:group><media:community><media:statistics views="20"/></media:community></media:group>
+      </entry>
+      <entry>
+        <title>조회수없음</title>
+        <link href="https://www.youtube.com/watch?v=none01"/>
+      </entry>
+    </feed>
+    """
+    items = sources_mod._parse_feed_body(
+        "유튜브", "채널", "https://www.youtube.com/feeds/videos.xml", raw, limit=5
+    )
+    assert [item.url for item in items] == ["https://www.youtube.com/watch?v=hit01"]
 
 
 def test_catalog_unknown_id_echoes_and_mega_has_groups():

@@ -165,15 +165,23 @@ def _http_get(url: str, *, timeout: float = 12.0) -> str | None:
 def _parse_feed_body(kind: str, source: str, url: str, raw: str, *, limit: int = 5) -> list[SourceItem]:
     parsed = feedparser.parse(raw)
     items: list[SourceItem] = []
-    for entry in parsed.entries[:limit]:
+    scan_limit = max(limit * 8, limit) if kind == "유튜브" else limit
+    for entry in parsed.entries[:scan_limit]:
         link = getattr(entry, "link", "") or ""
         title = _clean(getattr(entry, "title", "") or "제목 없음", 120)
         summary = _clean(getattr(entry, "summary", "") or getattr(entry, "description", "") or "", 220)
         if not link or not title:
             continue
+        if kind == "유튜브":
+            from app.services.youtube import meets_view_floor, views_from_feed_entry
+
+            if not meets_view_floor(views_from_feed_entry(entry)):
+                continue
         items.append(
             SourceItem(kind=kind, title=title, url=link, summary=summary or source, source=source)
         )
+        if len(items) >= limit:
+            break
     return items
 
 

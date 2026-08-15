@@ -241,7 +241,7 @@ _GROUPS: list[tuple[str, str, list[str], list[tuple[str, str, str, str]]]] = [
     (
         "kr-it",
         "국내 IT · 애그리게이터",
-        ["IT", "개발", "뉴스", "스타트업", "하드웨어"],
+        ["IT", "개발", "뉴스", "스타트업", "하드웨어", "반도체"],
         [
             (
                 "geeknews",
@@ -328,6 +328,8 @@ MEGA_TO_GROUPS: dict[str, list[str]] = {
     "라이프": ["life"],
     "커리어": ["career-news"],
     "뉴스": ["career-news", "kr-it"],
+    "반도체": ["kr-it", "stock-kr"],
+    "의학": ["kr-it", "career-news"],
 }
 
 

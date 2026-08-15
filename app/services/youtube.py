@@ -10,6 +10,8 @@ import httpx
 from app.config import get_settings
 
 API_BASE = "https://www.googleapis.com/youtube/v3"
+MIN_YOUTUBE_VIEWS = 10_000
+STATS_BATCH = 25
 
 # site_id → (label, channel_id)
 SITE_CHANNELS: dict[str, list[tuple[str, str]]] = {
@@ -41,6 +43,40 @@ def watch_url(video_id: str) -> str:
     return f"https://www.youtube.com/watch?v={video_id}"
 
 
+def meets_view_floor(views: int | None) -> bool:
+    return views is not None and views >= MIN_YOUTUBE_VIEWS
+
+
+def views_from_feed_entry(entry: object) -> int | None:
+    """YouTube Atom/RSS media:statistics views, if present."""
+    for name in ("media_statistics", "yt_statistics"):
+        stats = getattr(entry, name, None)
+        parsed = _views_from_mapping(stats)
+        if parsed is not None:
+            return parsed
+    getter = getattr(entry, "get", None)
+    if callable(getter):
+        parsed = _views_from_mapping(getter("media_statistics") or getter("yt_statistics"))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _views_from_mapping(stats: object) -> int | None:
+    if not isinstance(stats, dict):
+        return None
+    return _as_int(stats.get("views") or stats.get("viewCount"))
+
+
+def _as_int(raw: object) -> int | None:
+    if raw is None:
+        return None
+    try:
+        return int(str(raw).replace(",", "").strip())
+    except ValueError:
+        return None
+
+
 def _get(path: str, params: dict[str, str | int]) -> dict:
     settings = get_settings()
     query = {"key": settings.youtube_api_key, **params}
@@ -51,6 +87,24 @@ def _get(path: str, params: dict[str, str | int]) -> dict:
         if not isinstance(payload, dict):
             return {}
         return payload
+
+
+def video_view_counts(video_ids: list[str]) -> dict[str, int]:
+    ids = [vid for vid in video_ids if vid][:50]
+    if not ids or not youtube_configured():
+        return {}
+    try:
+        payload = _get("videos", {"part": "statistics", "id": ",".join(ids)})
+    except Exception:  # noqa: BLE001
+        return {}
+    counts: dict[str, int] = {}
+    for entry in payload.get("items") or []:
+        vid = str(entry.get("id") or "")
+        stats = entry.get("statistics") or {}
+        parsed = _as_int(stats.get("viewCount"))
+        if vid and parsed is not None:
+            counts[vid] = parsed
+    return counts
 
 
 def _item_from_playlist(entry: dict, label: str):
@@ -100,15 +154,24 @@ def fetch_channel_videos(channel_id: str, label: str, *, limit: int = 5) -> list
             {
                 "part": "snippet",
                 "playlistId": uploads_playlist_id(channel_id),
-                "maxResults": max(1, min(limit, 10)),
+                "maxResults": max(limit, min(STATS_BATCH, 50)),
             },
         )
     except Exception:  # noqa: BLE001 — fall back to RSS
         return []
-    items = []
+    mapped = []
+    ids: list[str] = []
     for entry in payload.get("items") or []:
         row = _item_from_playlist(entry, label)
         if row is None:
+            continue
+        vid = row.url.rsplit("v=", 1)[-1]
+        mapped.append((vid, row))
+        ids.append(vid)
+    counts = video_view_counts(ids)
+    items = []
+    for vid, row in mapped:
+        if not meets_view_floor(counts.get(vid)):
             continue
         items.append(row)
         if len(items) >= limit:
@@ -128,17 +191,26 @@ def search_videos(query: str, *, limit: int = 5) -> list:
                 "q": q,
                 "type": "video",
                 "order": "date",
-                "maxResults": max(1, min(limit, 10)),
+                "maxResults": max(limit, min(STATS_BATCH, 50)),
                 "relevanceLanguage": "ko",
                 "regionCode": "KR",
             },
         )
     except Exception:  # noqa: BLE001
         return []
-    items = []
+    mapped = []
+    ids: list[str] = []
     for entry in payload.get("items") or []:
         row = _item_from_search(entry, q)
         if row is None:
+            continue
+        vid = str((entry.get("id") or {}).get("videoId") or "")
+        mapped.append((vid, row))
+        ids.append(vid)
+    counts = video_view_counts(ids)
+    items = []
+    for vid, row in mapped:
+        if not meets_view_floor(counts.get(vid)):
             continue
         items.append(row)
         if len(items) >= limit:
@@ -156,14 +228,16 @@ def channels_for(topics: list[str], preferred_sites: list[str] | None) -> list[t
                 continue
             seen.add(cid)
             wanted.append((label, cid))
-    blob = " ".join(topics).lower()
+    blob = " ".join(topics)
+    semi = "반도체" in blob
+    broad = any(token in blob for token in ("주식", "경제", "라이프", "연애"))
     for label, cid, hint in TOPIC_CHANNELS:
         if cid in seen:
             continue
-        if not topics or hint.lower() in blob or any(h in blob for h in ("주식", "경제", "라이프", "연애")):
+        if not topics or hint.lower() in blob.lower() or (broad and not semi):
             seen.add(cid)
             wanted.append((label, cid))
-    if not wanted:
+    if not wanted and not semi:
         label, cid, _ = TOPIC_CHANNELS[0]
         wanted.append((label, cid))
     return wanted
@@ -185,7 +259,8 @@ def collect_youtube_items(
             seen.add(item.url)
             collected.append(item)
     sites = preferred_sites or []
-    if "youtube-life" in sites:
+    blob = " ".join(topics)
+    if "youtube-life" in sites or "반도체" in blob:
         q = (topics[0].split("/")[-1] if topics else "라이프").strip() or "라이프"
         for item in search_videos(q, limit=limit_per):
             if item.url in seen:

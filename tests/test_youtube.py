@@ -22,7 +22,7 @@ def test_fetch_channel_videos_maps_watch_urls(monkeypatch):
     monkeypatch.setenv("YOUTUBE_API_KEY", "test-key")
     get_settings.cache_clear()
 
-    class Resp:
+    class PlaylistResp:
         def raise_for_status(self):
             return None
 
@@ -35,7 +35,26 @@ def test_fetch_channel_videos_maps_watch_urls(monkeypatch):
                             "description": "금리와 환율",
                             "resourceId": {"videoId": "abc123xyz00"},
                         }
-                    }
+                    },
+                    {
+                        "snippet": {
+                            "title": "조회수 적은 영상",
+                            "description": "스킵",
+                            "resourceId": {"videoId": "lowviews000"},
+                        }
+                    },
+                ]
+            }
+
+    class VideosResp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "items": [
+                    {"id": "abc123xyz00", "statistics": {"viewCount": "25000"}},
+                    {"id": "lowviews000", "statistics": {"viewCount": "120"}},
                 ]
             }
 
@@ -50,10 +69,12 @@ def test_fetch_channel_videos_maps_watch_urls(monkeypatch):
             return None
 
         def get(self, url, params=None):
-            assert "playlistItems" in url
             assert params["key"] == "test-key"
-            assert params["playlistId"].startswith("UU")
-            return Resp()
+            if "playlistItems" in url:
+                assert params["playlistId"].startswith("UU")
+                return PlaylistResp()
+            assert "videos" in url
+            return VideosResp()
 
     monkeypatch.setattr("app.services.youtube.httpx.Client", Client)
     try:
@@ -75,16 +96,31 @@ def test_search_videos_maps_results(monkeypatch):
             return None
 
         def json(self):
+            if "search" in getattr(self, "_url", ""):
+                return {
+                    "items": [
+                        {
+                            "id": {"videoId": "vid99"},
+                            "snippet": {
+                                "title": "연애 조언",
+                                "description": "거리감",
+                                "channelTitle": "지식인사이드",
+                            },
+                        },
+                        {
+                            "id": {"videoId": "tiny01"},
+                            "snippet": {
+                                "title": "초소형 조회",
+                                "description": "x",
+                                "channelTitle": "지식인사이드",
+                            },
+                        },
+                    ]
+                }
             return {
                 "items": [
-                    {
-                        "id": {"videoId": "vid99"},
-                        "snippet": {
-                            "title": "연애 조언",
-                            "description": "거리감",
-                            "channelTitle": "지식인사이드",
-                        },
-                    }
+                    {"id": "vid99", "statistics": {"viewCount": "10000"}},
+                    {"id": "tiny01", "statistics": {"viewCount": "9999"}},
                 ]
             }
 
@@ -99,9 +135,14 @@ def test_search_videos_maps_results(monkeypatch):
             return None
 
         def get(self, url, params=None):
-            assert "search" in url
-            assert params["q"] == "라이프"
-            return Resp()
+            if "search" in url:
+                assert params["q"] == "라이프"
+                resp = Resp()
+                resp._url = url
+                return resp
+            resp = Resp()
+            resp._url = url
+            return resp
 
     monkeypatch.setattr("app.services.youtube.httpx.Client", Client)
     try:
@@ -126,3 +167,19 @@ def test_channels_for_prefers_site_then_topics():
     ids = [cid for _, cid in rows]
     assert ids[0] == "UChlgI3UHCOnwUGzWzbJEuYw"
     assert "UChlgI3UHCOnwUGzWzbJEuYw" in ids
+
+
+def test_views_from_feed_entry_reads_media_statistics():
+    class Entry:
+        media_statistics = {"views": "15000"}
+
+    assert yt.views_from_feed_entry(Entry()) == 15000
+    assert yt.meets_view_floor(15000) is True
+    assert yt.meets_view_floor(9999) is False
+    assert yt.meets_view_floor(None) is False
+
+
+def test_channels_for_semiconductor_does_not_force_finance_channels():
+    rows = yt.channels_for(["반도체/기술동향/HBM·메모리"], [])
+    ids = [cid for _, cid in rows]
+    assert "UChlgI3UHCOnwUGzWzbJEuYw" not in ids
