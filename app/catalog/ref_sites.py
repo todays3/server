@@ -289,7 +289,7 @@ _GROUPS: list[tuple[str, str, list[str], list[tuple[str, str, str, str]]]] = [
             (
                 "youtube-life",
                 "YouTube",
-                "라이프스타일·연애·자기계발·건강 관련 영상과 채널을 검색·시청하는 글로벌 동영상 플랫폼입니다. 지정 채널 RSS로 수집합니다.",
+                "라이프스타일·연애·자기계발 채널. YouTube Data API(youtube-mcp와 동일)로 최신 영상을 가져오고, 키가 없으면 RSS로 폴백합니다.",
                 "https://www.youtube.com/",
             ),
             (

@@ -181,12 +181,20 @@ def probe_site(site_id: str) -> SiteProbe:
         raise KeyError(site_id)
     started = perf_counter()
     feeds: list[FeedProbe] = []
-    for kind, name, url in site_feed_catalog().get(site_id, []):
-        feeds.append(_probe_rss(kind, name, url))
-    for spec in site_html_catalog().get(site_id, []):
-        feeds.append(_probe_html(spec))
+    from app.services.youtube import probe_youtube_site
+
+    yt_feeds = probe_youtube_site(site_id)
+    feeds.extend(yt_feeds)
+    need_rss = not yt_feeds or not any(feed.ok for feed in yt_feeds)
+    if need_rss:
+        for kind, name, url in site_feed_catalog().get(site_id, []):
+            feeds.append(_probe_rss(kind, name, url))
+        for spec in site_html_catalog().get(site_id, []):
+            feeds.append(_probe_html(spec))
     duration_ms = int((perf_counter() - started) * 1000)
     ok = any(feed.ok for feed in feeds) if feeds else False
+    ok_risks = [feed.bot_risk for feed in feeds if feed.ok]
+    bot_risk = worst_bot_risk(ok_risks if ok_risks else [feed.bot_risk for feed in feeds])
     return _put(
         SiteProbe(
             site_id=site_id,
@@ -196,7 +204,7 @@ def probe_site(site_id: str) -> SiteProbe:
             duration_ms=duration_ms,
             item_count=sum(feed.item_count for feed in feeds),
             feeds=feeds,
-            bot_risk=worst_bot_risk([feed.bot_risk for feed in feeds]),
+            bot_risk=bot_risk,
         )
     )
 

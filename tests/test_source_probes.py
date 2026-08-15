@@ -93,6 +93,18 @@ def test_probe_site_reports_http_failure(site_id: str, monkeypatch: pytest.Monke
     assert all(feed.bot_risk == "blocked" for feed in result.feeds)
 
 
+def test_probe_site_bot_risk_follows_successful_feed(monkeypatch: pytest.MonkeyPatch):
+    def mixed_fetch(url: str, **kwargs: object) -> FetchResult:
+        if "github.com/trending" in url or "github.com/search" in url:
+            return FetchResult(url, False, 403, "", "HTTP 403", bot_risk="blocked", bot_signal="403")
+        return FetchResult(url, True, 200, SAMPLE_RSS, "", bot_risk="clear", bot_signal="ok")
+
+    monkeypatch.setattr(probe_mod, "_fetch", mixed_fetch)
+    result = probe_site("github-trending")
+    assert result.ok is True
+    assert result.bot_risk == "clear"
+
+
 def test_probe_all_sites_covers_catalog(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(probe_mod, "_fetch", _ok_fetch)
     results = probe_all_sites()

@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     rate_limit_hooks_max: int = 60
     rate_limit_hooks_window_seconds: float = 60.0
 
+    youtube_api_key: str = ""
+
     # Android Tasker/MacroDroid → POST /api/v1/hooks/notifications
     # Empty secret disables the endpoint (503).
     flash_webhook_secret: str = ""
@@ -95,6 +97,10 @@ class Settings(BaseSettings):
             return "gpt-4o-mini"
         # Groq free-tier default
         return "llama-3.3-70b-versatile"
+
+    @property
+    def youtube_configured(self) -> bool:
+        return bool(self.youtube_api_key)
 
     @property
     def flash_webhook_configured(self) -> bool:

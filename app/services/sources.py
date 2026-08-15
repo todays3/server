@@ -132,7 +132,7 @@ class FetchResult:
 
 
 def _fetch(url: str, *, timeout: float = 12.0) -> FetchResult:
-    from app.services.polite_http import classify_bot_risk, fetch_url
+    from app.services.polite_http import classify_bot_risk, fetch_url, looks_like_xml_feed
 
     status, body, error, robots_ok = fetch_url(url, timeout=timeout)
     risk, signal = classify_bot_risk(
@@ -142,12 +142,15 @@ def _fetch(url: str, *, timeout: float = 12.0) -> FetchResult:
         robots_allowed=robots_ok,
     )
     http_ok = bool(robots_ok and status is not None and status < 400 and body)
-    ok = http_ok and risk != "blocked"
+    feed_body = looks_like_xml_feed(body)
+    if feed_body and risk == "blocked":
+        risk, signal = "caution", signal
+    ok = http_ok if feed_body else http_ok and risk != "blocked"
     return FetchResult(
         url,
         ok,
         status,
-        body if ok else (body if risk == "blocked" else ""),
+        body if ok or risk == "blocked" else "",
         error if not ok else "",
         risk,
         signal,
@@ -329,6 +332,7 @@ _SITE_FEEDS: dict[str, list[tuple[str, str, str]]] = {
     "cnbc": [
         ("아티클", "CNBC top news", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"),
         ("아티클", "CNBC world", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100727362"),
+        ("아티클", "CNBC Google", "https://news.google.com/rss/search?q=site:cnbc.com&hl=en-US&gl=US&ceid=US:en"),
     ],
     "reddit-stocks": [
         ("커뮤니티", "r/stocks", "https://www.reddit.com/r/stocks/.rss"),
@@ -580,15 +584,38 @@ def gather_candidates(
     preferred_sites: list[str] | None = None,
     max_items: int = 24,
 ) -> list[SourceItem]:
-    """Fetch RSS + YouTube + optional public HTML lists for selected sites."""
+    """Fetch RSS + YouTube (Data API, then RSS) + optional public HTML lists."""
+    from app.services.youtube import collect_youtube_items
+
     sites = preferred_sites or []
     site_feeds = _feeds_for_sites(sites)
-    topic_feeds = _feeds_for_topics(topics) + _youtube_feeds_for_topics(topics)
+    topic_feeds = _feeds_for_topics(topics)
+    yt_rss = _youtube_feeds_for_topics(topics)
     feeds = site_feeds + [f for f in topic_feeds if f not in site_feeds]
     collected: list[SourceItem] = []
     seen: set[str] = set()
 
+    for item in collect_youtube_items(topics, sites, limit_per=4):
+        if item.url in seen:
+            continue
+        seen.add(item.url)
+        collected.append(item)
+        if len(collected) >= max_items:
+            return collected
+
+    yt_got = {item.source for item in collected if item.kind == "유튜브"}
     for kind, source, url in feeds:
+        for item in _parse_feed(kind, source, url, limit=4):
+            if item.url in seen:
+                continue
+            seen.add(item.url)
+            collected.append(item)
+            if len(collected) >= max_items:
+                return collected
+
+    for kind, source, url in yt_rss:
+        if source in yt_got:
+            continue
         for item in _parse_feed(kind, source, url, limit=4):
             if item.url in seen:
                 continue
