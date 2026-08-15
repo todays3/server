@@ -2,6 +2,19 @@ from pathlib import Path
 
 from app.config import env_file_paths, env_mode, get_settings
 
+_SERVER_DIR = Path(__file__).resolve().parent.parent
+
+
+def _use_example_env(tmp_path: Path, monkeypatch, mode: str) -> None:
+    """CI has no gitignored `.env.*`; load the committed example as that mode file."""
+    src = _SERVER_DIR / f".env.{mode}.example"
+    dest = tmp_path / f".env.{mode}"
+    dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setattr("app.config._SERVER_ROOT", tmp_path)
+    monkeypatch.setenv("APP_ENV", mode)
+    monkeypatch.delenv("FRONTEND_ORIGIN", raising=False)
+    monkeypatch.delenv("KAKAO_REDIRECT_URI", raising=False)
+
 
 def test_allowed_cors_origins_includes_frontend_and_extras(monkeypatch):
     monkeypatch.setenv("FRONTEND_ORIGIN", "https://todays3.muhak.store")
@@ -58,10 +71,8 @@ def test_plain_env_is_not_loaded(monkeypatch, tmp_path):
         get_settings.cache_clear()
 
 
-def test_development_env_file_uses_localhost(monkeypatch):
-    monkeypatch.setenv("APP_ENV", "development")
-    monkeypatch.delenv("FRONTEND_ORIGIN", raising=False)
-    monkeypatch.delenv("KAKAO_REDIRECT_URI", raising=False)
+def test_development_env_file_uses_localhost(monkeypatch, tmp_path):
+    _use_example_env(tmp_path, monkeypatch, "development")
     get_settings.cache_clear()
     try:
         settings = get_settings()
@@ -72,10 +83,8 @@ def test_development_env_file_uses_localhost(monkeypatch):
         get_settings.cache_clear()
 
 
-def test_production_env_file_uses_public_origin(monkeypatch):
-    monkeypatch.setenv("APP_ENV", "production")
-    monkeypatch.delenv("FRONTEND_ORIGIN", raising=False)
-    monkeypatch.delenv("KAKAO_REDIRECT_URI", raising=False)
+def test_production_env_file_uses_public_origin(monkeypatch, tmp_path):
+    _use_example_env(tmp_path, monkeypatch, "production")
     get_settings.cache_clear()
     try:
         settings = get_settings()
