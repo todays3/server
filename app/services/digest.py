@@ -7,6 +7,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from time import perf_counter
 from urllib.parse import quote_plus
 from zoneinfo import ZoneInfo
 
@@ -15,6 +16,8 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import Digest, Preference, User
 from app.services import llm as llm_service
+from app.services.crawl_log import persist_crawl_run
+from app.services.pipeline_timing import elapsed_ms
 from app.services.sources import SourceItem, candidates_as_prompt_block, gather_candidates
 
 SEOUL = "Asia/Seoul"
@@ -81,8 +84,23 @@ def _kind_emoji(kind: str) -> str:
     return "📰"
 
 
-def _format_body(name: str, items: list[dict[str, str]], pref: Preference, topics: list[str]) -> str:
+def reviewed_line(count: int) -> str:
+    n = max(count, 1)
+    return f"{n}개의 아티클을 종합 검수했습니다"
+
+
+def _format_body(
+    name: str,
+    items: list[dict[str, str]],
+    pref: Preference,
+    topics: list[str],
+    *,
+    reviewed_count: int | None = None,
+) -> str:
+    n = reviewed_count if reviewed_count is not None else len(items)
     lines: list[str] = [
+        reviewed_line(n),
+        "",
         f"📬 {name}님을 위한 오늘의 3",
         "",
     ]
@@ -226,6 +244,7 @@ def _llm_curate(
     user: User,
     pref: Preference,
     candidates: list[SourceItem],
+    timings: dict[str, int] | None = None,
 ) -> tuple[tuple[str, str, list[dict[str, str]]] | None, str, str]:
     settings = get_settings()
     if not settings.llm_configured:
@@ -264,6 +283,7 @@ def _llm_curate(
         f"커스터마이징: {custom}\n"
         f"후보:\n{candidates_as_prompt_block(candidates)}\n"
     )
+    llm_started = perf_counter()
     text, _usage = llm_service.chat_completion(
         db,
         user_id=user.id,
@@ -275,13 +295,18 @@ def _llm_curate(
         temperature=0.4,
         max_tokens=1100 if insight_on else 900,
     )
+    if timings is not None:
+        timings["llm_ms"] = elapsed_ms(llm_started)
     if not text:
         return None, "empty_response", ""
     try:
+        agg_started = perf_counter()
         text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.I | re.M)
         data = json.loads(text)
         items = data.get("items") or []
         if len(items) < 3:
+            if timings is not None:
+                timings["aggregation_ms"] = elapsed_ms(agg_started)
             return None, "fewer_than_3_items", text[:2000]
         allowed = {c.url for c in candidates}
         cleaned: list[dict[str, str]] = []
@@ -306,6 +331,8 @@ def _llm_curate(
                     row["insight_url"] = insight_url[:500]
             cleaned.append(row)
         if len(cleaned) < 3:
+            if timings is not None:
+                timings["aggregation_ms"] = elapsed_ms(agg_started)
             return None, "fewer_than_3_valid_urls", text[:2000]
         cleaned = _attach_insights(cleaned, pref=pref, candidates=candidates)
         topics_list = _topic_list(pref)
@@ -317,7 +344,18 @@ def _llm_curate(
             now = datetime.now(ZoneInfo(SEOUL))
             weekday = ["월", "화", "수", "목", "금", "토", "일"][now.weekday()]
             title = f"오늘의 3 · {now.month}/{now.day} ({weekday})"
-        body = _format_body(user.display_name or "당신", cleaned, pref, topics_list)
+        if timings is not None:
+            timings["aggregation_ms"] = elapsed_ms(agg_started)
+        fmt_started = perf_counter()
+        body = _format_body(
+            user.display_name or "당신",
+            cleaned,
+            pref,
+            topics_list,
+            reviewed_count=len(candidates),
+        )
+        if timings is not None:
+            timings["format_ms"] = elapsed_ms(fmt_started)
         return (title, body, cleaned), "", text[:2000]
     except Exception:
         return None, "invalid_json", (text or "")[:2000]
@@ -339,9 +377,15 @@ class DigestPreview:
     candidates: list[SourceItem] = field(default_factory=list)
     topics: list[str] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
+    trigger_ms: int = 0
+    crawl_ms: int = 0
+    aggregation_ms: int = 0
+    llm_ms: int = 0
+    format_ms: int = 0
 
 
 def build_digest_preview(db: Session, user: User, pref: Preference) -> DigestPreview:
+    trigger_started = perf_counter()
     topics = _topic_list(pref)
     sites = _source_list(pref)
     now = datetime.now(ZoneInfo(SEOUL))
@@ -350,9 +394,14 @@ def build_digest_preview(db: Session, user: User, pref: Preference) -> DigestPre
     name = user.display_name or "당신"
     title = f"오늘의 3 · {now.month}/{now.day} ({weekday})"
     settings = get_settings()
+    trigger_ms = elapsed_ms(trigger_started)
 
+    crawl_started = perf_counter()
     candidates = gather_candidates(topics, preferred_sites=sites)
-    llm, skip_reason, llm_raw = _llm_curate(db, user, pref, candidates)
+    crawl_ms = elapsed_ms(crawl_started)
+
+    layer_ms: dict[str, int] = {"llm_ms": 0, "aggregation_ms": 0, "format_ms": 0}
+    llm, skip_reason, llm_raw = _llm_curate(db, user, pref, candidates, timings=layer_ms)
     if llm:
         llm_title, llm_body, llm_items = llm
         return DigestPreview(
@@ -366,8 +415,14 @@ def build_digest_preview(db: Session, user: User, pref: Preference) -> DigestPre
             candidates=candidates,
             topics=topics,
             sources=sites,
+            trigger_ms=trigger_ms,
+            crawl_ms=crawl_ms,
+            aggregation_ms=layer_ms.get("aggregation_ms", 0),
+            llm_ms=layer_ms.get("llm_ms", 0),
+            format_ms=layer_ms.get("format_ms", 0),
         )
 
+    agg_started = perf_counter()
     picked = _heuristic_pick(candidates, seed)
     curator = "heuristic" if picked else "static"
     items = _attach_insights(picked or _static_fallback(topics, seed), pref=pref, candidates=candidates)
@@ -377,9 +432,13 @@ def build_digest_preview(db: Session, user: User, pref: Preference) -> DigestPre
         topic = topics[i % len(topics)] if topics else item.get("hint", "")
         row["topic"] = topic.replace("/", " · ") if topic else ""
         labeled.append(row)
+    aggregation_ms = elapsed_ms(agg_started)
+    fmt_started = perf_counter()
+    body = _format_body(name, labeled, pref, topics, reviewed_count=len(candidates))
+    format_ms = elapsed_ms(fmt_started)
     return DigestPreview(
         title=title,
-        body=_format_body(name, labeled, pref, topics),
+        body=body,
         items=labeled,
         curator=curator,
         llm_configured=settings.llm_configured,
@@ -388,6 +447,11 @@ def build_digest_preview(db: Session, user: User, pref: Preference) -> DigestPre
         candidates=candidates,
         topics=topics,
         sources=sites,
+        trigger_ms=trigger_ms,
+        crawl_ms=crawl_ms,
+        aggregation_ms=aggregation_ms,
+        llm_ms=layer_ms.get("llm_ms", 0),
+        format_ms=format_ms,
     )
 
 
@@ -404,20 +468,41 @@ def create_digest(
     pref: Preference,
     *,
     status: str = "draft",
+    trigger: str = "preview",
+    slot_label: str = "",
+    lead_ms: int = 0,
 ) -> Digest:
     if pref.timezone != SEOUL:
         pref.timezone = SEOUL
         db.add(pref)
-    title, body, items = generate_digest_content(db, user, pref)
+    preview = build_digest_preview(db, user, pref)
     digest = Digest(
         user_id=user.id,
-        title=title,
-        body=body,
+        title=preview.title,
+        body=preview.body,
         status=status,
         delivery_channel="kakao_me",
-        items_json=json.dumps(items, ensure_ascii=False),
+        items_json=json.dumps(preview.items, ensure_ascii=False),
     )
     db.add(digest)
+    db.flush()
+    persist_crawl_run(
+        db,
+        user,
+        preview.candidates,
+        trigger=trigger,
+        digest_id=digest.id,
+        slot_label=slot_label,
+        trigger_ms=preview.trigger_ms,
+        crawl_ms=preview.crawl_ms,
+        aggregation_ms=preview.aggregation_ms,
+        llm_ms=preview.llm_ms,
+        format_ms=preview.format_ms,
+        lead_ms=lead_ms,
+        curator=preview.curator,
+        llm_skip_reason=preview.llm_skip_reason,
+    )
     db.commit()
     db.refresh(digest)
     return digest
+

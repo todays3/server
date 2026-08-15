@@ -215,6 +215,20 @@ class HealthOut(BaseModel):
     scheduler: str
 
 
+class NotificationHookIn(BaseModel):
+    app: str = Field(default="", max_length=80)
+    title: str = Field(min_length=1, max_length=300)
+    text: str = Field(default="", max_length=2000)
+    source: str = Field(default="", max_length=80)
+
+
+class NotificationHookOut(BaseModel):
+    accepted: bool
+    duplicate: bool = False
+    sent: bool = False
+    skipped: str = ""
+
+
 class AdminUsageSummary(BaseModel):
     calls: int = 0
     success_calls: int = 0
@@ -303,6 +317,8 @@ class SourceFeedProbeOut(BaseModel):
     item_count: int = 0
     sample_titles: list[str] = Field(default_factory=list)
     error: str = ""
+    bot_risk: str = "unknown"
+    bot_signal: str = ""
 
 
 class SourceSiteProbeOut(BaseModel):
@@ -313,12 +329,16 @@ class SourceSiteProbeOut(BaseModel):
     duration_ms: int = 0
     item_count: int = 0
     feeds: list[SourceFeedProbeOut] = Field(default_factory=list)
+    bot_risk: str = "unknown"
 
 
 class SourceProbeListOut(BaseModel):
     ok_count: int = 0
     fail_count: int = 0
     unknown_count: int = 0
+    blocked_count: int = 0
+    caution_count: int = 0
+    clear_count: int = 0
     sites: list[SourceSiteProbeOut]
 
 
@@ -339,3 +359,57 @@ class RefSiteGroupOut(BaseModel):
 class RefSiteCatalogOut(BaseModel):
     groups: list[RefSiteGroupOut]
     mega_map: dict[str, list[str]]
+
+
+class CrawlRunOut(BaseModel):
+    id: int
+    user_id: int
+    email: str
+    display_name: str
+    digest_id: int | None = None
+    trigger: str
+    slot_label: str = ""
+    kinds: dict[str, int]
+    total: int
+    created_at: datetime
+
+
+class CrawlRunListOut(BaseModel):
+    runs: list[CrawlRunOut]
+    total_runs: int
+
+
+class LatencyLayerOut(BaseModel):
+    id: str
+    label: str
+    p50_ms: int = 0
+    p90_ms: int = 0
+    mean_ms: int = 0
+
+
+class LatencyRunOut(BaseModel):
+    id: int
+    user_id: int
+    email: str
+    display_name: str
+    digest_id: int | None = None
+    trigger: str
+    slot_label: str = ""
+    curator: str = ""
+    llm_skip_reason: str = ""
+    created_at: datetime
+    ready_at: datetime | None = None
+    sent_at: datetime | None = None
+    lead_ms: int = 0
+    prep_ms: int = 0
+    e2e_ms: int = 0
+    layers: dict[str, int]
+
+
+class LatencyListOut(BaseModel):
+    lead_minutes: int
+    sample_size: int
+    layers: list[LatencyLayerOut]
+    runs: list[LatencyRunOut]
+
+

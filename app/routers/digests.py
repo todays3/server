@@ -1,4 +1,3 @@
-from datetime import datetime, timezone
 from typing import Annotated
 import json
 
@@ -10,8 +9,8 @@ from app.auth import get_current_user
 from app.db import get_db
 from app.models import Digest, User
 from app.schemas import DigestItemOut, DigestOut, PreviewRequest
+from app.services.delivery import deliver_digest
 from app.services.digest import create_digest
-from app.services.kakao import send_digest_via_kakao
 from app.routers.prefs import _ensure_pref
 
 router = APIRouter(prefix="/digests", tags=["digests"])
@@ -71,12 +70,13 @@ async def preview_digest(
     db: Annotated[Session, Depends(get_db)],
 ) -> DigestOut:
     pref = _ensure_pref(db, user)
-    digest = create_digest(db, user, pref, status="preview")
+    digest = create_digest(
+        db,
+        user,
+        pref,
+        status="preview",
+        trigger="send_now" if payload.send else "preview",
+    )
     if payload.send:
-        ok, err = await send_digest_via_kakao(user, digest.title, digest.body, db=db)
-        digest.status = "sent" if ok else "failed"
-        digest.error_message = err
-        digest.sent_at = datetime.now(timezone.utc) if ok else None
-        db.commit()
-        db.refresh(digest)
+        await deliver_digest(db, user, digest, wait_ms=0)
     return _digest_out(digest)

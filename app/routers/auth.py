@@ -193,6 +193,16 @@ async def kakao_oauth_callback(
 
     access = str(token.get("access_token") or "")
     refresh = str(token.get("refresh_token") or "")
+    expires_in = token.get("expires_in")
+    refresh_expires_in = token.get("refresh_token_expires_in")
+    try:
+        expires_in = int(expires_in) if expires_in is not None else None
+    except (TypeError, ValueError):
+        expires_in = None
+    try:
+        refresh_expires_in = int(refresh_expires_in) if refresh_expires_in is not None else None
+    except (TypeError, ValueError):
+        refresh_expires_in = None
     if not access:
         return _front_redirect(path=dest, error="missing_access_token")
 
@@ -219,6 +229,8 @@ async def kakao_oauth_callback(
             kakao_id=kakao_id,
             access_token=access,
             refresh_token=refresh,
+            expires_in=expires_in,
+            refresh_token_expires_in=refresh_expires_in,
         )
         return _front_redirect(path="/app", kakao="connected")
 
@@ -229,6 +241,8 @@ async def kakao_oauth_callback(
         email=email,
         access_token=access,
         refresh_token=refresh,
+        expires_in=expires_in,
+        refresh_token_expires_in=refresh_expires_in,
     )
 
     if user.status == "pending":

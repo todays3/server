@@ -1,5 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
 from typing import Annotated
+import json
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -9,26 +10,40 @@ from sqlalchemy.orm import Session, joinedload
 from app.auth import get_admin_user
 from app.config import get_settings
 from app.db import get_db
-from app.models import LlmUsage, Preference, User
+from app.models import CrawlRun, LlmUsage, Preference, User
 from app.schemas import (
     AdminDailyPoint,
+    AdminDigestPreviewOut,
+    AdminDigestPreviewRequest,
     AdminOverview,
     AdminPrefDetail,
     AdminUsageEvent,
     AdminUsageSummary,
     AdminUserDetail,
     AdminUserOut,
+    CrawlRunListOut,
+    CrawlRunOut,
     DigestCandidateOut,
     DigestItemOut,
+    LatencyLayerOut,
+    LatencyListOut,
+    LatencyRunOut,
     SourceFeedProbeOut,
     SourceProbeListOut,
     SourceSiteProbeOut,
-    AdminDigestPreviewOut,
-    AdminDigestPreviewRequest,
 )
+from app.services.crawl_log import persist_crawl_run
 from app.services.digest import build_digest_preview
+from app.services.pipeline_timing import (
+    LAYER_KEYS,
+    percentile,
+    prep_ms,
+    suggested_lead_minutes_from_db,
+    timings_from,
+    total_ms,
+)
 from app.services.send_times import parse_send_times_raw
-from app.services.source_probe import list_probe_snapshot, probe_all_sites, probe_site, summarize
+from app.services.source_probe import bot_risk_counts, list_probe_snapshot, probe_all_sites, probe_site, summarize
 from app.services.sources import collector_site_ids
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -347,6 +362,8 @@ def _feed_out(feed) -> SourceFeedProbeOut:
         item_count=feed.item_count,
         sample_titles=feed.sample_titles,
         error=feed.error,
+        bot_risk=feed.bot_risk,
+        bot_signal=feed.bot_signal,
     )
 
 
@@ -359,15 +376,20 @@ def _site_out(probe) -> SourceSiteProbeOut:
         duration_ms=probe.duration_ms,
         item_count=probe.item_count,
         feeds=[_feed_out(feed) for feed in probe.feeds],
+        bot_risk=probe.bot_risk,
     )
 
 
 def _list_out(sites) -> SourceProbeListOut:
     ok_count, fail_count, unknown_count = summarize(sites)
+    blocked_count, caution_count, clear_count = bot_risk_counts(sites)
     return SourceProbeListOut(
         ok_count=ok_count,
         fail_count=fail_count,
         unknown_count=unknown_count,
+        blocked_count=blocked_count,
+        caution_count=caution_count,
+        clear_count=clear_count,
         sites=[_site_out(site) for site in sites],
     )
 
@@ -409,6 +431,19 @@ def preview_digest_for_user(
     if pref is None:
         raise HTTPException(status_code=400, detail="이 사용자에게 설정이 없습니다")
     preview = build_digest_preview(db, user, pref)
+    persist_crawl_run(
+        db,
+        user,
+        preview.candidates,
+        trigger="admin_preview",
+        trigger_ms=preview.trigger_ms,
+        crawl_ms=preview.crawl_ms,
+        aggregation_ms=preview.aggregation_ms,
+        llm_ms=preview.llm_ms,
+        format_ms=preview.format_ms,
+        curator=preview.curator,
+        llm_skip_reason=preview.llm_skip_reason,
+    )
     db.commit()
     return AdminDigestPreviewOut(
         user_id=user.id,
@@ -445,4 +480,136 @@ def preview_digest_for_user(
             for c in preview.candidates
         ],
         sent_to_kakao=False,
+    )
+
+
+def _parse_kinds(raw: str) -> dict[str, int]:
+    try:
+        parsed = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        parsed = {}
+    if not isinstance(parsed, dict):
+        return {}
+    out: dict[str, int] = {}
+    for key, value in parsed.items():
+        try:
+            out[str(key)] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+@router.get("/crawl-runs", response_model=CrawlRunListOut)
+def list_crawl_runs(
+    admin: Annotated[User, Depends(get_admin_user)],
+    db: Annotated[Session, Depends(get_db)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 80,
+) -> CrawlRunListOut:
+    _ = admin
+    total_runs = db.scalar(select(func.count()).select_from(CrawlRun)) or 0
+    rows = list(
+        db.scalars(
+            select(CrawlRun).order_by(CrawlRun.created_at.desc()).limit(limit)
+        ).all()
+    )
+    user_ids = [r.user_id for r in rows]
+    users = {
+        u.id: u
+        for u in db.scalars(select(User).where(User.id.in_(user_ids or [0]))).all()
+    }
+    runs = []
+    for row in rows:
+        owner = users.get(row.user_id)
+        kinds = _parse_kinds(row.kinds_json)
+        runs.append(
+            CrawlRunOut(
+                id=row.id,
+                user_id=row.user_id,
+                email=owner.email if owner else "",
+                display_name=owner.display_name if owner else "",
+                digest_id=row.digest_id,
+                trigger=row.trigger,
+                slot_label=row.slot_label,
+                kinds=kinds,
+                total=row.total_count,
+                created_at=row.created_at,
+            )
+        )
+    return CrawlRunListOut(runs=runs, total_runs=int(total_runs))
+
+
+_LAYER_LABELS = {
+    "trigger": "트리거",
+    "crawl": "크롤링",
+    "aggregation": "집계",
+    "llm": "니즈 반영 (AI)",
+    "format": "답변 형식",
+    "wait": "정시 대기",
+    "send": "카카오 나에게 보내기",
+}
+
+
+@router.get("/latency", response_model=LatencyListOut)
+def list_latency(
+    admin: Annotated[User, Depends(get_admin_user)],
+    db: Annotated[Session, Depends(get_db)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 80,
+) -> LatencyListOut:
+    _ = admin
+    rows = list(db.scalars(select(CrawlRun).order_by(CrawlRun.created_at.desc()).limit(limit)).all())
+    user_ids = [r.user_id for r in rows]
+    users = {
+        u.id: u
+        for u in db.scalars(select(User).where(User.id.in_(user_ids or [0]))).all()
+    }
+    schedule_preps = [
+        prep_ms(row)
+        for row in rows
+        if row.trigger == "schedule" and prep_ms(row) > 0
+    ]
+    lead_minutes = suggested_lead_minutes_from_db(db)
+    layers_out: list[LatencyLayerOut] = []
+    for key in LAYER_KEYS:
+        samples = [int(getattr(row, f"{key}_ms", 0) or 0) for row in rows]
+        n = len(samples)
+        mean = int(sum(samples) / n) if n else 0
+        layers_out.append(
+            LatencyLayerOut(
+                id=key,
+                label=_LAYER_LABELS[key],
+                p50_ms=percentile(samples, 50),
+                p90_ms=percentile(samples, 90),
+                mean_ms=mean,
+            )
+        )
+    runs: list[LatencyRunOut] = []
+    for row in rows:
+        owner = users.get(row.user_id)
+        t = timings_from(row)
+        layers = {key: t[f"{key}_ms"] for key in LAYER_KEYS}
+        runs.append(
+            LatencyRunOut(
+                id=row.id,
+                user_id=row.user_id,
+                email=owner.email if owner else "",
+                display_name=owner.display_name if owner else "",
+                digest_id=row.digest_id,
+                trigger=row.trigger,
+                slot_label=row.slot_label,
+                curator=row.curator or "",
+                llm_skip_reason=row.llm_skip_reason or "",
+                created_at=row.created_at,
+                ready_at=row.ready_at,
+                sent_at=row.sent_at,
+                lead_ms=int(row.lead_ms or 0),
+                prep_ms=prep_ms(row),
+                e2e_ms=int(row.total_ms or 0) or total_ms(row),
+                layers=layers,
+            )
+        )
+    return LatencyListOut(
+        lead_minutes=lead_minutes,
+        sample_size=len(schedule_preps),
+        layers=layers_out,
+        runs=runs,
     )
