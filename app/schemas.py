@@ -42,6 +42,10 @@ class KakaoOAuthStartOut(BaseModel):
     message: str | None = None
 
 
+class KakaoCompleteRequest(BaseModel):
+    ticket: str = Field(min_length=16, max_length=200)
+
+
 class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -21,10 +21,13 @@ def connect_kakao(user: Annotated[User, Depends(get_current_user)]) -> KakaoConn
     if not settings.kakao_configured:
         return KakaoConnectOut(
             configured=False,
-            message="Set KAKAO_REST_API_KEY in server/.env to enable real Kakao OAuth.",
+            message="Set KAKAO_REST_API_KEY in server/.env.development or .env.production.",
             url=None,
         )
-    url = kakao_service.build_authorize_url(_encode_oauth_state(purpose="connect", user_id=user.id))
+    url = kakao_service.build_authorize_url(
+        _encode_oauth_state(purpose="connect", user_id=user.id),
+        prompt="consent",
+    )
     return KakaoConnectOut(configured=True, url=url)
 
 

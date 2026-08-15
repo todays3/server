@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Literal
 from urllib.parse import urlencode
 
@@ -13,6 +14,7 @@ from app.db import get_db
 from app.deps.rate_limit import rate_limit_auth
 from app.models import Preference, User
 from app.schemas import (
+    KakaoCompleteRequest,
     KakaoOAuthStartOut,
     LoginRequest,
     RegisterRequest,
@@ -21,6 +23,7 @@ from app.schemas import (
     UserOut,
 )
 from app.services import kakao as kakao_service
+from app.services.oauth_tickets import consume_login_ticket, issue_login_ticket
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -38,7 +41,11 @@ def _user_out(user: User) -> UserOut:
 
 def _encode_oauth_state(*, purpose: Literal["login", "connect"], user_id: int | None = None) -> str:
     settings = get_settings()
-    payload: dict = {"purpose": purpose, "flow": "kakao_oauth"}
+    payload: dict = {
+        "purpose": purpose,
+        "flow": "kakao_oauth",
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=10),
+    }
     if user_id is not None:
         payload["uid"] = user_id
     return jwt.encode(payload, settings.secret_key, algorithm="HS256")
@@ -58,10 +65,11 @@ def _decode_oauth_state(state: str) -> dict:
         raise HTTPException(status_code=400, detail="Invalid OAuth state") from exc
 
 
-def _front_redirect(**params: str) -> RedirectResponse:
+def _front_redirect(*, path: str = "/auth", **params: str | None) -> RedirectResponse:
     settings = get_settings()
-    qs = urlencode({k: v for k, v in params.items() if v is not None})
-    return RedirectResponse(url=f"{settings.frontend_origin}/auth?{qs}")
+    qs = urlencode({k: v for k, v in params.items() if v})
+    suffix = f"?{qs}" if qs else ""
+    return RedirectResponse(url=f"{settings.frontend_origin}{path}{suffix}")
 
 
 @router.post("/register", response_model=RegisterResponse, deprecated=True)
@@ -158,38 +166,53 @@ def kakao_oauth_redirect(
 
 @router.get("/kakao/callback")
 async def kakao_oauth_callback(
-    code: Annotated[str, Query()],
-    state: Annotated[str, Query()],
     db: Annotated[Session, Depends(get_db)],
     _: Annotated[None, Depends(rate_limit_auth)],
+    code: Annotated[str | None, Query()] = None,
+    state: Annotated[str | None, Query()] = None,
+    error: Annotated[str | None, Query()] = None,
+    error_description: Annotated[str | None, Query()] = None,
 ) -> RedirectResponse:
-    payload = _decode_oauth_state(state)
+    if error:
+        return _front_redirect(error=error, detail=(error_description or "")[:120])
+    if not code or not state:
+        return _front_redirect(error="missing_code")
+
+    try:
+        payload = _decode_oauth_state(state)
+    except HTTPException:
+        return _front_redirect(error="invalid_state")
+
     purpose = payload["purpose"]
+    dest = "/app" if purpose == "connect" else "/auth"
 
     try:
         token = await kakao_service.exchange_code(code)
     except Exception as exc:  # noqa: BLE001
-        return _front_redirect(error="token_exchange_failed", detail=str(exc)[:120])
+        return _front_redirect(path=dest, error="token_exchange_failed", detail=str(exc)[:120])
 
     access = str(token.get("access_token") or "")
     refresh = str(token.get("refresh_token") or "")
     if not access:
-        return _front_redirect(error="missing_access_token")
+        return _front_redirect(path=dest, error="missing_access_token")
 
     try:
         profile = await kakao_service.fetch_kakao_profile(access)
     except Exception as exc:  # noqa: BLE001
-        return _front_redirect(error="profile_failed", detail=str(exc)[:120])
+        return _front_redirect(path=dest, error="profile_failed", detail=str(exc)[:120])
 
     kakao_id, nickname, email = kakao_service.parse_profile(profile)
     if not kakao_id:
-        return _front_redirect(error="incomplete_profile")
+        return _front_redirect(path=dest, error="incomplete_profile")
 
     if purpose == "connect":
         user_id = int(payload.get("uid") or 0)
         user = db.get(User, user_id)
         if user is None:
             return _front_redirect(error="user_not_found")
+        other = kakao_service.find_user_by_kakao_id(db, kakao_id)
+        if other is not None and other.id != user.id:
+            return _front_redirect(path="/app", error="kakao_already_linked")
         kakao_service.upsert_kakao_account(
             db,
             user,
@@ -197,8 +220,7 @@ async def kakao_oauth_callback(
             access_token=access,
             refresh_token=refresh,
         )
-        settings = get_settings()
-        return RedirectResponse(url=f"{settings.frontend_origin}/app?kakao=connected")
+        return _front_redirect(path="/app", kakao="connected")
 
     user, _created = kakao_service.resolve_or_create_oauth_user(
         db,
@@ -216,5 +238,16 @@ async def kakao_oauth_callback(
     if user.status != "approved":
         return _front_redirect(error="not_approved")
 
-    jwt_token = create_access_token(user.id)
-    return _front_redirect(token=jwt_token)
+    ticket = issue_login_ticket(create_access_token(user.id))
+    return _front_redirect(oauth_ticket=ticket)
+
+
+@router.post("/kakao/complete", response_model=TokenResponse)
+def kakao_oauth_complete(
+    payload: KakaoCompleteRequest,
+    _: Annotated[None, Depends(rate_limit_auth)],
+) -> TokenResponse:
+    token = consume_login_ticket(payload.ticket)
+    if not token:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="만료되었거나 잘못된 카카오 로그인입니다")
+    return TokenResponse(access_token=token)

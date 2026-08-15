@@ -30,7 +30,7 @@ OAUTH_SCOPES = "talk_message,profile_nickname,account_email"
 MEMO_TEXT_LIMIT = 1000
 
 
-def build_authorize_url(state: str) -> str:
+def build_authorize_url(state: str, *, prompt: str | None = None) -> str:
     settings = get_settings()
     if not settings.kakao_configured:
         raise RuntimeError("Kakao REST API key is not configured")
@@ -41,6 +41,8 @@ def build_authorize_url(state: str) -> str:
         "state": state,
         "scope": OAUTH_SCOPES,
     }
+    if prompt:
+        params["prompt"] = prompt
     return f"{AUTH_URL}?{urlencode(params)}"
 
 
@@ -57,8 +59,12 @@ async def exchange_code(code: str) -> dict:
 
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.post(TOKEN_URL, data=data)
-        resp.raise_for_status()
-        return resp.json()
+        payload = resp.json() if resp.content else {}
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                str(payload.get("error_description") or payload.get("error") or payload.get("msg") or resp.text)
+            )
+        return payload
 
 
 async def refresh_access_token(refresh_token: str) -> dict:
@@ -84,8 +90,10 @@ async def refresh_access_token(refresh_token: str) -> dict:
 async def fetch_kakao_profile(access_token: str) -> dict:
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.get(ME_URL, headers={"Authorization": f"Bearer {access_token}"})
-        resp.raise_for_status()
-        return resp.json()
+        payload = resp.json() if resp.content else {}
+        if resp.status_code >= 400:
+            raise RuntimeError(str(payload.get("msg") or payload.get("error_description") or resp.text))
+        return payload
 
 
 def parse_profile(profile: dict) -> tuple[str, str, str | None]:
