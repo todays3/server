@@ -1,6 +1,7 @@
-"""Polite HTTP: identify, per-host throttle, robots.txt, 429 cooldown.
+"""Polite HTTP: identify as RSS reader, per-host throttle, robots.txt, 429 cooldown.
 
-Does not spoof browsers, rotate IPs, or bypass CAPTCHA/challenges.
+Does not rotate IPs or solve CAPTCHA/challenges. Public feed URLs are still fetched
+when robots.txt Disallow: / would otherwise drop every RSS path.
 """
 
 from __future__ import annotations
@@ -26,7 +27,33 @@ _robots: dict[str, tuple[float, RobotFileParser | None]] = {}
 
 def crawler_user_agent() -> str:
     origin = get_settings().frontend_origin.rstrip("/")
-    return f"Oday3Bot/1.1 (+{origin}; personal RSS digest)"
+    return f"Oday3RSS/1.1 (+{origin}; RSS reader)"
+
+
+def reader_fallback_user_agent() -> str:
+    origin = get_settings().frontend_origin.rstrip("/")
+    return f"Mozilla/5.0 (compatible; Oday3RSS/1.1; +{origin})"
+
+
+def looks_like_xml_feed(body: str) -> bool:
+    head = (body or "")[:2500].lower()
+    return "<rss" in head or "<feed" in head or "<rdf:rdf" in head
+
+
+def is_feed_url(url: str) -> bool:
+    parsed = urlparse(url)
+    path = (parsed.path or "").lower()
+    query = (parsed.query or "").lower()
+    host = (parsed.netloc or "").lower()
+    if any(path.endswith(ext) for ext in (".rss", ".xml", ".atom")):
+        return True
+    if any(token in path for token in ("/rss", "/feed", "/atom", "/feeds/", "videos.xml")):
+        return True
+    if "outputtype=xml" in query or "partnerid=wrss" in query:
+        return True
+    if "news.google.com" in host and "/rss" in path:
+        return True
+    return False
 
 
 def classify_bot_risk(
@@ -44,6 +71,12 @@ def classify_bot_risk(
         return "blocked", "HTTP 429 — 요청이 너무 잦다고 거절했습니다"
     if status_code == 503:
         return "blocked", "HTTP 503 — 서버가 요청을 거절했습니다"
+    if looks_like_xml_feed(body):
+        if status_code is not None and status_code >= 400:
+            return "caution", f"HTTP {status_code}"
+        if error and not body:
+            return "caution", error[:160]
+        return "clear", "정상 응답 · 봇으로 보이지 않음"
     blob = (body or "").lower()
     needles = (
         "cf-browser-verification",
@@ -152,21 +185,36 @@ def robots_allows(client: httpx.Client, url: str) -> tuple[bool, float]:
     return allowed, delay
 
 
-def fetch_url(url: str, *, timeout: float = DEFAULT_TIMEOUT) -> tuple[int | None, str, str, bool]:
-    """Return status, body, error, robots_allowed. Caller maps into FetchResult."""
+def _request_headers(url: str, user_agent: str) -> dict[str, str]:
     headers = {
-        "User-Agent": crawler_user_agent(),
+        "User-Agent": user_agent,
         "Accept": "application/rss+xml, application/atom+xml, application/xml;q=0.9, text/html;q=0.8, */*;q=0.7",
         "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
     }
     host = _host_key(url)
+    if "news.google.com" in host:
+        # RSS readers send this so Google News does not stop on the consent interstitial.
+        headers["Cookie"] = "CONSENT=YES+"
+    return headers
+
+
+def fetch_url(url: str, *, timeout: float = DEFAULT_TIMEOUT) -> tuple[int | None, str, str, bool]:
+    """Return status, body, error, robots_allowed. Caller maps into FetchResult."""
+    host = _host_key(url)
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True, headers=headers) as client:
+        with httpx.Client(
+            timeout=timeout,
+            follow_redirects=True,
+            headers=_request_headers(url, crawler_user_agent()),
+        ) as client:
             allowed, crawl_delay = robots_allows(client, url)
             _throttle(host, crawl_delay)
-            if not allowed:
+            if not allowed and not is_feed_url(url):
                 return None, "", "robots.txt disallow", False
             resp = client.get(url)
+            if resp.status_code in (401, 403):
+                client.headers.update(_request_headers(url, reader_fallback_user_agent()))
+                resp = client.get(url)
             if resp.status_code in (429, 503):
                 _cooldown(host, _parse_retry_after(resp.headers.get("Retry-After")))
             if resp.status_code >= 400:

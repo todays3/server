@@ -3,7 +3,14 @@
 from app.services.polite_http import classify_bot_risk
 
 
-def test_classify_clear_on_ok_rss():
+def test_classify_rss_with_captcha_word_is_still_clear():
+    risk, _ = classify_bot_risk(
+        status_code=200,
+        body="<?xml version='1.0'?><rss><item><title>New captcha bypass research</title></item></rss>",
+        error="",
+        robots_allowed=True,
+    )
+    assert risk == "clear"
     risk, signal = classify_bot_risk(
         status_code=200,
         body="<?xml version='1.0'?><rss></rss>",

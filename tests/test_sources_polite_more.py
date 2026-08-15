@@ -30,7 +30,18 @@ from app.services.sources import (
 def test_classify_remaining_and_worst():
     assert classify_bot_risk(status_code=503, body="", error="", robots_allowed=True)[0] == "blocked"
     assert classify_bot_risk(status_code=401, body="", error="", robots_allowed=True)[0] == "blocked"
-    assert "CAPTCHA" in classify_bot_risk(status_code=200, body="captcha please", error="", robots_allowed=True)[1]
+    assert "CAPTCHA" in classify_bot_risk(
+        status_code=200, body="<html>captcha please</html>", error="", robots_allowed=True
+    )[1]
+    assert (
+        classify_bot_risk(
+            status_code=200,
+            body="<?xml version='1.0'?><rss><item>captcha in a headline</item></rss>",
+            error="",
+            robots_allowed=True,
+        )[0]
+        == "clear"
+    )
     assert classify_bot_risk(status_code=418, body="x", error="", robots_allowed=True)[0] == "caution"
     assert classify_bot_risk(status_code=None, body="", error="timeout", robots_allowed=True)[0] == "caution"
     assert worst_bot_risk([]) == "unknown"
@@ -50,8 +61,9 @@ def test_retry_after_and_fetch(monkeypatch):
             self.headers = headers or {}
 
     class Client:
-        def __init__(self, **_k):
+        def __init__(self, **k):
             self.calls = 0
+            self.headers = dict(k.get("headers") or {})
 
         def __enter__(self):
             return self
@@ -83,6 +95,45 @@ def test_retry_after_and_fetch(monkeypatch):
     assert status is None
     assert "down" in err
 
+
+def test_fetch_retries_403_with_reader_ua(monkeypatch):
+    clear_polite_state()
+    calls: list[str] = []
+
+    class Resp:
+        def __init__(self, code, text="", headers=None):
+            self.status_code = code
+            self.text = text
+            self.headers = headers or {}
+
+    class Client:
+        def __init__(self, **k):
+            self.headers = k.get("headers") or {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return None
+
+        def get(self, url):
+            if url.endswith("robots.txt"):
+                return Resp(404)
+            ua = str(self.headers.get("User-Agent", ""))
+            calls.append(ua)
+            if "Mozilla/5.0" in ua:
+                return Resp(200, "<rss version='2.0'><channel></channel></rss>")
+            return Resp(403, "bot")
+
+    monkeypatch.setattr("app.services.polite_http.httpx.Client", Client)
+    monkeypatch.setattr("app.services.polite_http.time.sleep", lambda *_a: None)
+    monkeypatch.setattr("app.services.polite_http.random.uniform", lambda *_a: 0)
+    status, body, _, allowed = fetch_url("https://example.com/news.rss")
+    assert allowed is True
+    assert status == 200
+    assert "rss" in body
+    assert len(calls) >= 2
+
     class DenyRobots(Client):
         def get(self, url):
             if url.endswith("robots.txt"):
@@ -94,6 +145,19 @@ def test_retry_after_and_fetch(monkeypatch):
     status, _, err, allowed = fetch_url("https://blocked.example/page")
     assert allowed is False
     assert "robots" in err
+
+    class DenyRobotsFeed(Client):
+        def get(self, url):
+            if url.endswith("robots.txt"):
+                return Resp(200, "User-agent: *\nDisallow: /\n")
+            return Resp(200, "<rss version='2.0'></rss>")
+
+    monkeypatch.setattr("app.services.polite_http.httpx.Client", DenyRobotsFeed)
+    clear_polite_state()
+    status, body, err, allowed = fetch_url("https://blocked.example/feed.xml")
+    assert allowed is True
+    assert status == 200
+    assert "rss" in body
 
 
 def test_robots_allows_fail_open(monkeypatch):
