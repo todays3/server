@@ -305,6 +305,11 @@ class AdminOverview(BaseModel):
     usage_today: AdminUsageSummary
     series: list[AdminDailyPoint]
     recent: list[AdminUsageEvent]
+    last_run_cpu_peak_percent: int = 0
+    last_run_rss_peak_bytes: int = 0
+    last_run_rss_delta_bytes: int = 0
+    runs_cpu_peak_max_percent: int = 0
+    runs_rss_peak_max_bytes: int = 0
 
 
 class SourceFeedProbeOut(BaseModel):
@@ -404,6 +409,9 @@ class LatencyRunOut(BaseModel):
     prep_ms: int = 0
     e2e_ms: int = 0
     layers: dict[str, int]
+    cpu_peak_percent: int = 0
+    rss_peak_bytes: int = 0
+    rss_delta_bytes: int = 0
 
 
 class LatencyListOut(BaseModel):
@@ -411,5 +419,7 @@ class LatencyListOut(BaseModel):
     sample_size: int
     layers: list[LatencyLayerOut]
     runs: list[LatencyRunOut]
+    cpu_peak_max_percent: int = 0
+    rss_peak_max_bytes: int = 0
 
 

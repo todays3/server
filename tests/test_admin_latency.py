@@ -64,6 +64,9 @@ def db_session():
             lead_ms=480000,
             curator="llm",
             created_at=datetime.now(timezone.utc),
+            cpu_peak_percent=45,
+            rss_peak_bytes=104857600,
+            rss_delta_bytes=20971520,
         )
     )
     session.commit()
@@ -116,3 +119,8 @@ async def test_list_latency(client: AsyncClient, db_session):
     assert row["prep_ms"] == 5817
     assert row["e2e_ms"] == 246067
     assert row["curator"] == "llm"
+    assert row["cpu_peak_percent"] == 45
+    assert row["rss_peak_bytes"] == 104857600
+    assert row["rss_delta_bytes"] == 20971520
+    assert body["cpu_peak_max_percent"] == 45
+    assert body["rss_peak_max_bytes"] == 104857600

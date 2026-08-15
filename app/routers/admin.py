@@ -34,6 +34,7 @@ from app.schemas import (
 )
 from app.services.crawl_log import persist_crawl_run
 from app.services.digest import build_digest_preview
+from app.services.run_resources import peak_sampler
 from app.services.pipeline_timing import (
     LAYER_KEYS,
     percentile,
@@ -241,6 +242,10 @@ def admin_overview(
         for r in recent_rows
     ]
 
+    last = db.scalar(select(CrawlRun).order_by(CrawlRun.created_at.desc()).limit(1))
+    cpu_max = db.scalar(select(func.max(CrawlRun.cpu_peak_percent))) or 0
+    rss_max = db.scalar(select(func.max(CrawlRun.rss_peak_bytes))) or 0
+
     return AdminOverview(
         users_total=users_total,
         users_pending=users_pending,
@@ -252,6 +257,11 @@ def admin_overview(
         usage_today=_usage_summary(today_usage),
         series=_daily_series(all_users, all_usage, days=14),
         recent=recent,
+        last_run_cpu_peak_percent=int(last.cpu_peak_percent or 0) if last else 0,
+        last_run_rss_peak_bytes=int(last.rss_peak_bytes or 0) if last else 0,
+        last_run_rss_delta_bytes=int(last.rss_delta_bytes or 0) if last else 0,
+        runs_cpu_peak_max_percent=int(cpu_max),
+        runs_rss_peak_max_bytes=int(rss_max),
     )
 
 
@@ -430,7 +440,8 @@ def preview_digest_for_user(
     pref = user.preference
     if pref is None:
         raise HTTPException(status_code=400, detail="이 사용자에게 설정이 없습니다")
-    preview = build_digest_preview(db, user, pref)
+    with peak_sampler() as peak:
+        preview = build_digest_preview(db, user, pref)
     persist_crawl_run(
         db,
         user,
@@ -443,6 +454,9 @@ def preview_digest_for_user(
         format_ms=preview.format_ms,
         curator=preview.curator,
         llm_skip_reason=preview.llm_skip_reason,
+        cpu_peak_percent=peak.cpu_peak_percent,
+        rss_peak_bytes=peak.rss_peak_bytes,
+        rss_delta_bytes=peak.rss_delta_bytes,
     )
     db.commit()
     return AdminDigestPreviewOut(
@@ -605,6 +619,9 @@ def list_latency(
                 prep_ms=prep_ms(row),
                 e2e_ms=int(row.total_ms or 0) or total_ms(row),
                 layers=layers,
+                cpu_peak_percent=int(row.cpu_peak_percent or 0),
+                rss_peak_bytes=int(row.rss_peak_bytes or 0),
+                rss_delta_bytes=int(row.rss_delta_bytes or 0),
             )
         )
     return LatencyListOut(
@@ -612,4 +629,6 @@ def list_latency(
         sample_size=len(schedule_preps),
         layers=layers_out,
         runs=runs,
+        cpu_peak_max_percent=max((r.cpu_peak_percent for r in runs), default=0),
+        rss_peak_max_bytes=max((r.rss_peak_bytes for r in runs), default=0),
     )

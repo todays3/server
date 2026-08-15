@@ -14,7 +14,7 @@ from sqlalchemy.pool import StaticPool
 from app.auth import create_access_token, hash_password
 from app.db import Base, get_db
 from app.main import app
-from app.models import LlmUsage, Preference, User
+from app.models import CrawlRun, LlmUsage, Preference, User
 
 
 @pytest.fixture()
@@ -58,6 +58,18 @@ def db_session():
             created_at=datetime.now(timezone.utc) - timedelta(days=1),
         )
     )
+    session.add(
+        CrawlRun(
+            user_id=admin.id,
+            trigger="schedule",
+            kinds_json="{}",
+            total_count=0,
+            cpu_peak_percent=45,
+            rss_peak_bytes=104857600,
+            rss_delta_bytes=20971520,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
     session.commit()
 
     try:
@@ -98,3 +110,8 @@ async def test_admin_overview_includes_series(client: AsyncClient, db_session):
     assert body["usage_all"]["total_tokens"] == 30
     assert body["series"][-1]["tokens_cumulative"] == 30
     assert any(p["tokens"] == 30 for p in body["series"])
+    assert body["last_run_cpu_peak_percent"] == 45
+    assert body["last_run_rss_peak_bytes"] == 104857600
+    assert body["last_run_rss_delta_bytes"] == 20971520
+    assert body["runs_cpu_peak_max_percent"] == 45
+    assert body["runs_rss_peak_max_bytes"] == 104857600

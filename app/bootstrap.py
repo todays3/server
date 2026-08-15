@@ -65,6 +65,9 @@ def ensure_schema() -> None:
                 "send_ms",
                 "total_ms",
                 "lead_ms",
+                "cpu_peak_percent",
+                "rss_peak_bytes",
+                "rss_delta_bytes",
             )
             for col in int_cols:
                 if col not in crawl_cols:

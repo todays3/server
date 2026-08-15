@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.models import CrawlRun, Digest, User
 from app.services.kakao import send_digest_via_kakao
 from app.services.pipeline_timing import elapsed_ms, total_ms
+from app.services.run_resources import apply_peak_to_run, peak_sampler
 
 
 def _as_utc(dt: datetime | None) -> datetime | None:
@@ -63,17 +64,20 @@ async def deliver_digest(
     send_started = datetime.now(timezone.utc)
     measured_wait = wait_ms if wait_ms is not None else wait_ms_since_ready(run, send_started)
     started = perf_counter()
-    ok, err = await send_digest_via_kakao(user, digest.title, digest.body, db=db)
+    with peak_sampler() as peak:
+        ok, err = await send_digest_via_kakao(user, digest.title, digest.body, db=db)
     digest.status = "sent" if ok else "failed"
     digest.error_message = err
     digest.sent_at = datetime.now(timezone.utc) if ok else None
-    apply_send_timing(
+    timed = apply_send_timing(
         db,
         digest.id,
         send_ms=elapsed_ms(started),
         wait_ms=measured_wait,
         sent_at=digest.sent_at,
     )
+    if timed is not None:
+        apply_peak_to_run(timed, peak)
     db.commit()
     db.refresh(digest)
     return ok, err

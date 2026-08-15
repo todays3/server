@@ -18,6 +18,7 @@ from app.models import Digest, Preference, User
 from app.services import llm as llm_service
 from app.services.crawl_log import persist_crawl_run
 from app.services.pipeline_timing import elapsed_ms
+from app.services.run_resources import peak_sampler
 from app.services.sources import SourceItem, candidates_as_prompt_block, gather_candidates
 
 SEOUL = "Asia/Seoul"
@@ -475,7 +476,8 @@ def create_digest(
     if pref.timezone != SEOUL:
         pref.timezone = SEOUL
         db.add(pref)
-    preview = build_digest_preview(db, user, pref)
+    with peak_sampler() as peak:
+        preview = build_digest_preview(db, user, pref)
     digest = Digest(
         user_id=user.id,
         title=preview.title,
@@ -501,6 +503,9 @@ def create_digest(
         lead_ms=lead_ms,
         curator=preview.curator,
         llm_skip_reason=preview.llm_skip_reason,
+        cpu_peak_percent=peak.cpu_peak_percent,
+        rss_peak_bytes=peak.rss_peak_bytes,
+        rss_delta_bytes=peak.rss_delta_bytes,
     )
     db.commit()
     db.refresh(digest)

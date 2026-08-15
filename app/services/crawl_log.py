@@ -43,6 +43,9 @@ def persist_crawl_run(
     curator: str = "",
     llm_skip_reason: str = "",
     ready_at: datetime | None = None,
+    cpu_peak_percent: int = 0,
+    rss_peak_bytes: int = 0,
+    rss_delta_bytes: int = 0,
 ) -> CrawlRun:
     kinds = kind_counts(candidates)
     row = CrawlRun(
@@ -63,6 +66,9 @@ def persist_crawl_run(
         curator=curator,
         llm_skip_reason=llm_skip_reason,
         ready_at=ready_at or datetime.now(timezone.utc),
+        cpu_peak_percent=max(0, int(cpu_peak_percent)),
+        rss_peak_bytes=max(0, int(rss_peak_bytes)),
+        rss_delta_bytes=max(0, int(rss_delta_bytes)),
     )
     row.total_ms = sum_total_ms(row)
     db.add(row)

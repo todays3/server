@@ -124,3 +124,5 @@ async def test_create_digest_records_crawl_run(db_session, monkeypatch):
     assert runs[0].crawl_ms >= 0
     assert runs[0].trigger_ms >= 0
     assert runs[0].format_ms >= 0
+    assert runs[0].cpu_peak_percent >= 0
+    assert runs[0].rss_peak_bytes >= 0
