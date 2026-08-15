@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
@@ -52,9 +52,30 @@ class UserOut(BaseModel):
     id: int
     email: EmailStr
     display_name: str
+    occupation: str = ""
+    birth_date: date | None = None
     status: str
     is_admin: bool
     kakao_connected: bool
+
+
+class ProfileUpdate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    display_name: str = Field(min_length=1, max_length=80)
+    occupation: str = Field(default="", max_length=80)
+    birth_date: date | None = None
+
+    @field_validator("birth_date")
+    @classmethod
+    def birth_date_reasonable(cls, value: date | None) -> date | None:
+        if value is None:
+            return None
+        if value.year < 1900:
+            raise ValueError("생년월일이 너무 이릅니다")
+        if value > date.today():
+            raise ValueError("생년월일은 오늘 이전이어야 합니다")
+        return value
 
 
 class AdminUserOut(BaseModel):
@@ -67,6 +88,10 @@ class AdminUserOut(BaseModel):
     is_admin: bool
     created_at: datetime
     approved_at: datetime | None
+
+
+class AdminStatusUpdate(BaseModel):
+    status: Literal["pending", "approved", "rejected", "stopped"]
 
 
 class SendTimeSlot(BaseModel):

@@ -1,6 +1,6 @@
 """Digest heuristic pick, create_digest, and LLM curation contracts."""
 
-from __future__ import annotations
+from datetime import date
 
 import json
 
@@ -14,7 +14,11 @@ from app.services.digest import (
     _heuristic_pick,
     _llm_curate,
     _static_fallback,
+    age_band,
     create_digest,
+    occupation_tokens,
+    personalize_candidates,
+    profile_brief,
 )
 from app.services.sources import SourceItem
 
@@ -220,6 +224,7 @@ def test_llm_curate_prompt_asks_for_seumnida_style(db_session, monkeypatch):
         user = User(
             email="tone@example.com",
             display_name="테스터",
+            occupation="간호사",
             password_hash=hash_password("abcdefgh"),
             status="approved",
         )
@@ -241,3 +246,45 @@ def test_llm_curate_prompt_asks_for_seumnida_style(db_session, monkeypatch):
     assert "합니다/습니다" in prompt
     assert "큐레이터입니다" in prompt
     assert "큐레이터다" not in prompt
+    assert "간호사" in prompt
+    assert "직업:" in prompt
+
+
+def test_age_band_and_profile_brief_omit_raw_birthday():
+    assert age_band(date(1990, 1, 1), today=date(2026, 8, 16)) == "30대"
+    user = User(email="p@example.com", display_name="민수", occupation="내과 의사", birth_date=date(1988, 3, 12))
+    brief = profile_brief(user, today=date(2026, 8, 16))
+    assert "내과 의사" in brief
+    assert "30대" in brief
+    assert "1988" not in brief
+
+
+def test_personalize_candidates_prefers_occupation_tokens():
+    user = User(email="p2@example.com", display_name="민수", occupation="반도체 연구원")
+    items = [
+        SourceItem(kind="아티클", title="연애 팁", url="https://a.example", summary="소개팅", source="라이프"),
+        SourceItem(kind="아티클", title="HBM 반도체 공정", url="https://b.example", summary="연구원 시각", source="전자"),
+    ]
+    ranked = personalize_candidates(items, user)
+    assert ranked[0].url == "https://b.example"
+
+
+def test_occupation_tokens_expand_job_aliases():
+    tokens = occupation_tokens("내과 의사")
+    assert "의사" in tokens
+    assert "의료" in tokens
+
+
+def test_heuristic_keeps_personalized_order_and_kind_mix():
+    user = User(email="p3@example.com", display_name="민수", occupation="반도체 연구원")
+    items = [
+        SourceItem(kind="아티클", title="연애 팁", url="https://life.example", summary="소개팅", source="라이프"),
+        SourceItem(kind="아티클", title="HBM 반도체", url="https://semi.example", summary="공정", source="전자"),
+        SourceItem(kind="유튜브", title=" unrelated clip", url="https://yt.example", summary="s", source="yt"),
+        SourceItem(kind="커뮤니티", title="잡담", url="https://c.example", summary="s", source="c"),
+    ]
+    ranked = personalize_candidates(items, user)
+    picked = _heuristic_pick(ranked, "seed")
+    assert picked[0]["url"] == "https://semi.example"
+    assert {row["kind"] for row in picked} >= {"아티클", "유튜브", "커뮤니티"}
+

@@ -19,6 +19,7 @@ from app.schemas import (
     AdminKakaoTestSendRequest,
     AdminOverview,
     AdminPrefDetail,
+    AdminStatusUpdate,
     AdminUsageEvent,
     AdminUsageSummary,
     AdminUserDetail,
@@ -326,6 +327,32 @@ def list_users(
     return list(db.scalars(stmt).all())
 
 
+def _apply_member_status(user: User, status: str) -> None:
+    if status == "approved":
+        user.status = "approved"
+        if user.approved_at is None:
+            user.approved_at = datetime.now(timezone.utc)
+        return
+    if status == "rejected":
+        user.status = "rejected"
+        user.approved_at = None
+        return
+    if status == "pending":
+        user.status = "pending"
+        user.approved_at = None
+        return
+    user.status = status
+
+
+def _mutable_member(db: Session, user_id: int) -> User:
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다")
+    if user.is_admin:
+        raise HTTPException(status_code=400, detail="관리자 계정은 변경할 수 없습니다")
+    return user
+
+
 @router.post("/users/{user_id}/approve", response_model=AdminUserOut)
 def approve_user(
     user_id: int,
@@ -333,13 +360,8 @@ def approve_user(
     db: Annotated[Session, Depends(get_db)],
 ) -> User:
     _ = admin
-    user = db.get(User, user_id)
-    if user is None:
-        raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다")
-    if user.is_admin:
-        raise HTTPException(status_code=400, detail="관리자 계정은 변경할 수 없습니다")
-    user.status = "approved"
-    user.approved_at = datetime.now(timezone.utc)
+    user = _mutable_member(db, user_id)
+    _apply_member_status(user, "approved")
     db.commit()
     db.refresh(user)
     return user
@@ -352,13 +374,23 @@ def reject_user(
     db: Annotated[Session, Depends(get_db)],
 ) -> User:
     _ = admin
-    user = db.get(User, user_id)
-    if user is None:
-        raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다")
-    if user.is_admin:
-        raise HTTPException(status_code=400, detail="관리자 계정은 변경할 수 없습니다")
-    user.status = "rejected"
-    user.approved_at = None
+    user = _mutable_member(db, user_id)
+    _apply_member_status(user, "rejected")
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@router.patch("/users/{user_id}/status", response_model=AdminUserOut)
+def set_user_status(
+    user_id: int,
+    payload: AdminStatusUpdate,
+    admin: Annotated[User, Depends(get_admin_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> User:
+    _ = admin
+    user = _mutable_member(db, user_id)
+    _apply_member_status(user, payload.status)
     db.commit()
     db.refresh(user)
     return user

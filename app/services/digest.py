@@ -7,7 +7,7 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from time import perf_counter
 from urllib.parse import quote_plus
 from zoneinfo import ZoneInfo
@@ -78,6 +78,83 @@ def _topic_list(pref: Preference) -> list[str]:
 
 def _customization(pref: Preference) -> str:
     return (pref.notes or "").strip()
+
+
+def occupation_tokens(occupation: str) -> list[str]:
+    parts = re.split(r"[\s,/·|]+", (occupation or "").strip())
+    aliases = {
+        "의사": ("의료", "병원", "의학", "진료"),
+        "간호": ("의료", "병원", "간호"),
+        "약사": ("의료", "약품", "약국"),
+        "반도체": ("칩", "hbm", "파운드리", "웨이퍼"),
+        "개발": ("소프트웨어", "프로그래밍", "코딩"),
+        "개발자": ("소프트웨어", "프로그래밍", "코딩"),
+        "교사": ("교육", "학교", "학생"),
+        "교수": ("대학", "연구", "교육"),
+        "연구원": ("연구", "논문"),
+        "변호사": ("법률", "소송", "법원"),
+        "회계": ("세무", "재무"),
+        "기자": ("언론", "뉴스"),
+    }
+    tokens: list[str] = []
+    seen: set[str] = set()
+
+    def add(token: str) -> None:
+        key = token.lower()
+        if len(token) < 2 or key in seen:
+            return
+        seen.add(key)
+        tokens.append(token)
+
+    for part in parts:
+        add(part)
+        for extra in aliases.get(part, ()):
+            add(extra)
+        for key, extras in aliases.items():
+            if key != part and key in part:
+                add(key)
+                for extra in extras:
+                    add(extra)
+    return tokens
+
+
+def age_band(birth: date | None, *, today: date | None = None) -> str:
+    if birth is None:
+        return ""
+    day = today or datetime.now(ZoneInfo(SEOUL)).date()
+    years = day.year - birth.year - ((day.month, day.day) < (birth.month, birth.day))
+    if years < 0 or years > 120:
+        return ""
+    if years < 10:
+        return f"{years}세"
+    return f"{(years // 10) * 10}대"
+
+
+def profile_brief(user: User, *, today: date | None = None) -> str:
+    occ = (getattr(user, "occupation", None) or "").strip() or "(없음)"
+    band = age_band(getattr(user, "birth_date", None), today=today) or "(없음)"
+    return (
+        f"닉네임: {(user.display_name or '').strip() or '(없음)'}\n"
+        f"직업: {occ}\n"
+        f"연령대: {band}\n"
+        "직업·연령대에 실질적으로 도움이 되는 후보를 우선하고, 말투는 그 독자에 맞춥니다. "
+        "생년월일·나이를 본문에 숫자로 쓰지 마세요."
+    )
+
+
+def personalize_candidates(candidates: list[SourceItem], user: User) -> list[SourceItem]:
+    tokens = occupation_tokens(getattr(user, "occupation", "") or "")
+    band = age_band(getattr(user, "birth_date", None))
+    if band:
+        tokens = [*tokens, band]
+    if not tokens or not candidates:
+        return candidates
+
+    def score(item: SourceItem) -> int:
+        blob = f"{item.title} {item.summary} {item.source}".lower()
+        return sum(1 for token in tokens if token.lower() in blob)
+
+    return sorted(candidates, key=score, reverse=True)
 
 
 def _wants_insights(pref: Preference) -> bool:
@@ -188,24 +265,22 @@ def _attach_insights(
 
 
 def _heuristic_pick(candidates: list[SourceItem], seed: str) -> list[dict[str, str]]:
-    """Pick up to 3 items preferring kind diversity — works without LLM."""
+    """Pick up to 3 items from an already-ranked list, preferring kind diversity."""
     if not candidates:
         return []
-    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
-    start = int(digest[:8], 16) % len(candidates)
-    ordered = candidates[start:] + candidates[:start]
+    _ = seed
 
     picked: list[SourceItem] = []
     used_kinds: set[str] = set()
-    for item in ordered:
-        if item.kind in used_kinds and len(picked) < 3:
+    for item in candidates:
+        if item.kind in used_kinds:
             continue
         picked.append(item)
         used_kinds.add(item.kind)
         if len(picked) >= 3:
             break
     if len(picked) < 3:
-        for item in ordered:
+        for item in candidates:
             if item not in picked:
                 picked.append(item)
             if len(picked) >= 3:
@@ -290,6 +365,7 @@ def _llm_curate(
         f"{insight_json}"
         "}]}\n"
         f"수신자: {user.display_name}\n"
+        f"{profile_brief(user)}\n"
         f"관심 주제: {topics}\n"
         f"커스터마이징: {custom}\n"
         f"후보:\n{candidates_as_prompt_block(candidates)}\n"
@@ -415,7 +491,7 @@ def build_digest_preview(
 
     _emit(on_progress, "crawl")
     crawl_started = perf_counter()
-    candidates = gather_candidates(topics, preferred_sites=sites)
+    candidates = personalize_candidates(gather_candidates(topics, preferred_sites=sites), user)
     crawl_ms = elapsed_ms(crawl_started)
 
     layer_ms: dict[str, int] = {"llm_ms": 0, "aggregation_ms": 0, "format_ms": 0}

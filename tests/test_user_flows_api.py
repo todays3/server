@@ -91,7 +91,8 @@ async def test_register_login_pending_rejected(client: AsyncClient, db_session):
     pend = await client.post(
         "/api/v1/auth/login", json={"email": "pending@example.com", "password": "pending123"}
     )
-    assert pend.status_code == 403
+    assert pend.status_code == 200
+    assert "access_token" in pend.json()
 
     rej = await client.post(
         "/api/v1/auth/login", json={"email": "rejected@example.com", "password": "rejected1"}
@@ -100,15 +101,18 @@ async def test_register_login_pending_rejected(client: AsyncClient, db_session):
 
 
 @pytest.mark.asyncio
-async def test_me_rejects_bad_and_pending_tokens(client: AsyncClient, db_session):
+async def test_me_rejects_bad_tokens_and_allows_pending(client: AsyncClient, db_session):
     assert (await client.get("/api/v1/auth/me", headers={"Authorization": "Bearer not-a-jwt"})).status_code == 401
     missing = await client.get(
         "/api/v1/auth/me", headers={"Authorization": f"Bearer {create_access_token(99999)}"}
     )
     assert missing.status_code == 401
     pending = _user(db_session, "pending@example.com")
-    blocked = await client.get("/api/v1/auth/me", headers=_bearer(pending))
-    assert blocked.status_code == 403
+    me = await client.get("/api/v1/auth/me", headers=_bearer(pending))
+    assert me.status_code == 200
+    assert me.json()["status"] == "pending"
+    prefs = await client.get("/api/v1/prefs", headers=_bearer(pending))
+    assert prefs.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -423,6 +427,34 @@ async def test_admin_users_approve_reject(client: AsyncClient, db_session):
 
     rej = await client.post(f"/api/v1/admin/users/{pending.id}/reject", headers=headers)
     assert rej.json()["status"] == "rejected"
+
+    member = _user(db_session, "user@example.com")
+    stopped = await client.patch(
+        f"/api/v1/admin/users/{member.id}/status",
+        headers=headers,
+        json={"status": "stopped"},
+    )
+    assert stopped.status_code == 200
+    assert stopped.json()["status"] == "stopped"
+    login = await client.post(
+        "/api/v1/auth/login", json={"email": "user@example.com", "password": "user12345"}
+    )
+    assert login.status_code == 403
+    assert "정지" in login.json()["detail"]
+
+    admin_status = await client.patch(
+        f"/api/v1/admin/users/{admin.id}/status",
+        headers=headers,
+        json={"status": "stopped"},
+    )
+    assert admin_status.status_code == 400
+
+    invalid = await client.patch(
+        f"/api/v1/admin/users/{member.id}/status",
+        headers=headers,
+        json={"status": "STOPPED"},
+    )
+    assert invalid.status_code == 422
 
 
 @pytest.mark.asyncio

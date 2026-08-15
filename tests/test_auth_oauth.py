@@ -156,9 +156,10 @@ async def test_kakao_callback_consent_denied(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_kakao_callback_creates_approved_user(client: AsyncClient, db_session, monkeypatch):
+async def test_kakao_callback_creates_pending_user(client: AsyncClient, db_session, monkeypatch):
     from app.models import User
     from app.routers.auth import _encode_oauth_state
+    from app.services.nicknames import split_nickname
 
     _patch_kakao_profile(monkeypatch, kakao_id=4242, nickname="민수")
     state = _encode_oauth_state(purpose="login")
@@ -169,10 +170,14 @@ async def test_kakao_callback_creates_approved_user(client: AsyncClient, db_sess
     )
     assert res.status_code in (302, 303, 307)
     location = res.headers["location"]
+    assert "/pending" in location
     assert "oauth_ticket=" in location
-    assert "status=pending" not in location
     user = db_session.query(User).filter(User.email == "kakao.4242@users.oday3.app").one()
-    assert user.status == "approved"
+    assert user.status == "pending"
+    assert user.display_name != "민수"
+    doing, animal = split_nickname(user.display_name)
+    assert doing
+    assert animal
     assert user.kakao is not None
     assert user.kakao.kakao_id == "4242"
 

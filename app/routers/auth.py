@@ -8,7 +8,7 @@ from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth import create_access_token, get_current_user, hash_password, verify_password
+from app.auth import create_access_token, get_authenticated_user, get_current_user, hash_password, verify_password
 from app.config import get_settings
 from app.db import get_db
 from app.deps.rate_limit import rate_limit_auth
@@ -17,6 +17,7 @@ from app.schemas import (
     KakaoCompleteRequest,
     KakaoOAuthStartOut,
     LoginRequest,
+    ProfileUpdate,
     RegisterRequest,
     RegisterResponse,
     TokenResponse,
@@ -24,6 +25,7 @@ from app.schemas import (
 )
 from app.services import kakao as kakao_service
 from app.services.oauth_tickets import consume_login_ticket, issue_login_ticket
+from app.services.nicknames import random_nickname
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -33,6 +35,8 @@ def _user_out(user: User) -> UserOut:
         id=user.id,
         email=user.email,
         display_name=user.display_name,
+        occupation=user.occupation or "",
+        birth_date=user.birth_date,
         status=user.status,
         is_admin=user.is_admin,
         kakao_connected=user.kakao is not None and bool(user.kakao.access_token),
@@ -82,7 +86,7 @@ def register(payload: RegisterRequest, db: Annotated[Session, Depends(get_db)]) 
 
     user = User(
         email=payload.email.lower(),
-        display_name=payload.display_name.strip(),
+        display_name=random_nickname(),
         password_hash=hash_password(payload.password),
         status="pending",
         is_admin=False,
@@ -114,24 +118,38 @@ def login(
     if user is None or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="이메일 또는 비밀번호가 올바르지 않습니다")
 
-    if user.status == "pending":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="가입 승인 대기 중입니다. 관리자 승인 후 로그인할 수 있습니다.",
-        )
     if user.status == "rejected":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="가입이 거절된 계정입니다.",
         )
-    if user.status != "approved":
+    if user.status == "stopped":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="정지된 계정입니다.",
+        )
+    if user.status not in ("approved", "pending"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="로그인할 수 없는 계정입니다")
 
     return TokenResponse(access_token=create_access_token(user.id))
 
 
 @router.get("/me", response_model=UserOut)
-def me(user: Annotated[User, Depends(get_current_user)]) -> UserOut:
+def me(user: Annotated[User, Depends(get_authenticated_user)]) -> UserOut:
+    return _user_out(user)
+
+
+@router.patch("/me", response_model=UserOut)
+def update_me(
+    payload: ProfileUpdate,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> UserOut:
+    user.display_name = payload.display_name.strip()
+    user.occupation = (payload.occupation or "").strip()
+    user.birth_date = payload.birth_date
+    db.commit()
+    db.refresh(user)
     return _user_out(user)
 
 
@@ -245,14 +263,16 @@ async def kakao_oauth_callback(
         refresh_token_expires_in=refresh_expires_in,
     )
 
-    if user.status == "pending":
-        return _front_redirect(status="pending", name=user.display_name)
     if user.status == "rejected":
         return _front_redirect(error="rejected")
-    if user.status != "approved":
+    if user.status == "stopped":
+        return _front_redirect(error="stopped")
+    if user.status not in ("approved", "pending"):
         return _front_redirect(error="not_approved")
 
     ticket = issue_login_ticket(create_access_token(user.id))
+    if user.status == "pending":
+        return _front_redirect(path="/pending", oauth_ticket=ticket, name=user.display_name)
     return _front_redirect(oauth_ticket=ticket)
 
 

@@ -36,7 +36,7 @@ def create_access_token(user_id: int) -> str:
     )
 
 
-def get_current_user(
+def get_authenticated_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
     db: Annotated[Session, Depends(get_db)],
 ) -> User:
@@ -52,6 +52,12 @@ def get_current_user(
     user = db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="사용자를 찾을 수 없습니다")
+    return user
+
+
+def get_current_user(
+    user: Annotated[User, Depends(get_authenticated_user)],
+) -> User:
     if user.status != "approved":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

@@ -18,6 +18,7 @@ from sqlalchemy.orm.exc import DetachedInstanceError
 
 from app.config import get_settings
 from app.models import KakaoAccount, Preference, User
+from app.services.nicknames import random_nickname
 
 
 AUTH_URL = "https://kauth.kakao.com/oauth/authorize"
@@ -207,12 +208,8 @@ def resolve_or_create_oauth_user(
             refresh_token_expires_in=refresh_token_expires_in,
         )
         changed = False
-        if display_name and not existing.display_name:
-            existing.display_name = display_name
-            changed = True
-        if existing.status == "pending":
-            existing.status = "approved"
-            existing.approved_at = datetime.now(timezone.utc)
+        if not (existing.display_name or "").strip():
+            existing.display_name = random_nickname()
             changed = True
         if changed:
             db.add(existing)
@@ -237,11 +234,11 @@ def resolve_or_create_oauth_user(
 
     user = User(
         email=email_norm,
-        display_name=display_name.strip() or "카카오 친구",
+        display_name=random_nickname(),
         password_hash=None,
-        status="approved",
+        status="pending",
         is_admin=False,
-        approved_at=datetime.now(timezone.utc),
+        approved_at=None,
     )
     db.add(user)
     db.flush()

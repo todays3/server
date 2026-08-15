@@ -48,6 +48,8 @@ def test_ensure_schema_adds_columns_on_legacy_sqlite(tmp_path, monkeypatch):
         pref_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(preferences)")).fetchall()}
     assert "status" in user_cols
     assert "is_admin" in user_cols
+    assert "occupation" in user_cols
+    assert "birth_date" in user_cols
     assert "send_times" in pref_cols
     assert "insight_questions" in pref_cols
 
@@ -58,20 +60,29 @@ def test_ensure_schema_on_empty_database(tmp_path, monkeypatch):
     ensure_schema()
 
 
-def test_seed_accounts_deletes_admin_seed_and_repairs_member(monkeypatch):
+def test_seed_accounts_deletes_admin_and_test_user_seeds(monkeypatch):
     engine = create_engine("sqlite://")
     TestingSession = sessionmaker(bind=engine)
     Base.metadata.create_all(engine)
     monkeypatch.setattr("app.bootstrap.SessionLocal", TestingSession)
     leftover = TestingSession()
-    leftover.add(
-        User(
-            email="admin@example.com",
-            display_name="관리자",
-            password_hash=hash_password("admin12345"),
-            status="approved",
-            is_admin=True,
-        )
+    leftover.add_all(
+        [
+            User(
+                email="admin@example.com",
+                display_name="관리자",
+                password_hash=hash_password("admin12345"),
+                status="approved",
+                is_admin=True,
+            ),
+            User(
+                email="user@example.com",
+                display_name="테스트유저",
+                password_hash=hash_password("user12345"),
+                status="approved",
+                is_admin=False,
+            ),
+        ]
     )
     leftover.commit()
     leftover.close()
@@ -79,13 +90,7 @@ def test_seed_accounts_deletes_admin_seed_and_repairs_member(monkeypatch):
     seed_accounts()
     db = TestingSession()
     assert db.query(User).filter(User.email == "admin@example.com").one_or_none() is None
-    member = db.query(User).filter(User.email == "user@example.com").one()
-    assert member.is_admin is False
-    member.status = "pending"
-    db.commit()
-    seed_accounts()
-    db.refresh(member)
-    assert member.status == "approved"
+    assert db.query(User).filter(User.email == "user@example.com").one_or_none() is None
     db.close()
 
 
