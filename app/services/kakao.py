@@ -12,8 +12,9 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import inspect as sa_inspect, select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import DetachedInstanceError
 
 from app.config import get_settings
 from app.models import KakaoAccount, Preference, User
@@ -24,8 +25,9 @@ TOKEN_URL = "https://kauth.kakao.com/oauth/token"
 ME_URL = "https://kapi.kakao.com/v2/user/me"
 MEMO_URL = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
 
-# talk_message enables 나에게 보내기; profile + email for signup identity
-OAUTH_SCOPES = "talk_message,profile_nickname,account_email"
+# Optional extra scopes for 나에게 보내기 after login. Login itself omits scope
+# so Kakao only asks for items already enabled in the developer console.
+MEMO_SCOPES = "talk_message"
 
 # Kakao text template hard limit
 MEMO_TEXT_LIMIT = 1000
@@ -33,7 +35,7 @@ MEMO_TEXT_LIMIT = 1000
 ACCESS_REFRESH_SKEW = timedelta(minutes=10)
 
 
-def build_authorize_url(state: str, *, prompt: str | None = None) -> str:
+def build_authorize_url(state: str, *, prompt: str | None = None, scopes: str | None = None) -> str:
     settings = get_settings()
     if not settings.kakao_configured:
         raise RuntimeError("Kakao REST API key is not configured")
@@ -42,8 +44,9 @@ def build_authorize_url(state: str, *, prompt: str | None = None) -> str:
         "redirect_uri": settings.kakao_redirect_uri,
         "response_type": "code",
         "state": state,
-        "scope": OAUTH_SCOPES,
     }
+    if scopes:
+        params["scope"] = scopes
     if prompt:
         params["prompt"] = prompt
     return f"{AUTH_URL}?{urlencode(params)}"
@@ -203,8 +206,16 @@ def resolve_or_create_oauth_user(
             expires_in=expires_in,
             refresh_token_expires_in=refresh_token_expires_in,
         )
+        changed = False
         if display_name and not existing.display_name:
             existing.display_name = display_name
+            changed = True
+        if existing.status == "pending":
+            existing.status = "approved"
+            existing.approved_at = datetime.now(timezone.utc)
+            changed = True
+        if changed:
+            db.add(existing)
             db.commit()
             db.refresh(existing)
         return existing, False
@@ -228,8 +239,9 @@ def resolve_or_create_oauth_user(
         email=email_norm,
         display_name=display_name.strip() or "카카오 친구",
         password_hash=None,
-        status="pending",
+        status="approved",
         is_admin=False,
+        approved_at=datetime.now(timezone.utc),
     )
     db.add(user)
     db.flush()
@@ -359,7 +371,7 @@ async def send_memo_to_me(access_token: str, title: str, body: str) -> list[dict
 
 
 async def _refresh_user_token(db: Session, user: User) -> str:
-    account = user.kakao
+    account = kakao_account_for(user, db)
     if account is None or not account.refresh_token:
         raise RuntimeError("Kakao refresh_token is missing — reconnect Kakao")
     token = await refresh_access_token(account.refresh_token)
@@ -374,12 +386,39 @@ async def _refresh_user_token(db: Session, user: User) -> str:
 
 
 async def ensure_fresh_access_token(db: Session, user: User) -> str:
-    account = user.kakao
+    account = kakao_account_for(user, db)
     if account is None or not account.access_token:
         raise RuntimeError("Kakao account is not connected")
     if access_token_needs_refresh(account):
         return await _refresh_user_token(db, user)
     return account.access_token
+
+
+def kakao_account_for(user: User, db: Session | None = None) -> KakaoAccount | None:
+    """Load KakaoAccount without lazy-loading a detached User (send-now worker thread)."""
+    try:
+        state = sa_inspect(user, raiseerr=False)
+        if state is None:
+            return getattr(user, "kakao", None)
+        if not state.detached:
+            return user.kakao
+    except DetachedInstanceError:
+        pass
+    user_id = getattr(user, "id", None)
+    if db is None or user_id is None:
+        return None
+    return db.scalar(select(KakaoAccount).where(KakaoAccount.user_id == user_id))
+
+
+def friendly_kakao_send_error(raw: str) -> str:
+    text = (raw or "").strip()
+    low = text.lower()
+    if "insufficient scope" in low:
+        return (
+            "카카오 ‘나에게 보내기’ 권한이 없습니다. "
+            "‘권한 갱신’을 눌러 메시지 권한을 허용한 뒤 다시 보내세요."
+        )
+    return text
 
 
 async def send_digest_via_kakao(
@@ -393,10 +432,11 @@ async def send_digest_via_kakao(
     if not settings.kakao_configured:
         return True, "mock: kakao not configured — digest stored as sent"
 
-    if user.kakao is None or not user.kakao.access_token:
+    account = kakao_account_for(user, db)
+    if account is None or not account.access_token:
         return False, "Kakao account is not connected"
 
-    access = user.kakao.access_token
+    access = account.access_token
     if db is not None:
         try:
             access = await ensure_fresh_access_token(db, user)
@@ -414,6 +454,6 @@ async def send_digest_via_kakao(
                 return True, "refreshed token then sent"
             except Exception as refresh_exc:  # noqa: BLE001
                 return False, f"token refresh failed: {refresh_exc}"
-        return False, str(exc)
+        return False, friendly_kakao_send_error(str(exc))
     except Exception as exc:  # noqa: BLE001 — surface to digest.error_message
-        return False, str(exc)
+        return False, friendly_kakao_send_error(str(exc))

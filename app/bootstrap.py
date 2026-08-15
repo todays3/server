@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.auth import hash_password
 from app.config import get_settings
 from app.db import SessionLocal, engine, apply_sqlite_pragmas
-from app.models import Preference, User
+from app.models import CrawlRun, Digest, KakaoAccount, LlmUsage, Preference, User
 
 
 def ensure_schema() -> None:
@@ -98,6 +98,20 @@ def ensure_schema() -> None:
                 conn.execute(text("ALTER TABLE kakao_accounts ADD COLUMN refresh_expires_at DATETIME"))
 
 
+def _delete_user_by_email(db: Session, email: str) -> None:
+    user = db.scalar(select(User).where(User.email == email.lower()))
+    if user is None:
+        return
+    uid = user.id
+    db.query(CrawlRun).filter(CrawlRun.user_id == uid).delete()
+    db.query(LlmUsage).filter(LlmUsage.user_id == uid).delete()
+    db.query(Digest).filter(Digest.user_id == uid).delete()
+    db.query(KakaoAccount).filter(KakaoAccount.user_id == uid).delete()
+    db.query(Preference).filter(Preference.user_id == uid).delete()
+    db.delete(user)
+    db.commit()
+
+
 def _ensure_user(
     db: Session,
     *,
@@ -146,13 +160,7 @@ def seed_accounts() -> None:
     settings = get_settings()
     db: Session = SessionLocal()
     try:
-        _ensure_user(
-            db,
-            email=settings.admin_email,
-            password=settings.admin_password,
-            display_name=settings.admin_name,
-            is_admin=True,
-        )
+        _delete_user_by_email(db, settings.admin_email)
         _ensure_user(
             db,
             email=settings.test_user_email,

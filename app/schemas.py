@@ -165,6 +165,24 @@ class AdminDigestPreviewRequest(BaseModel):
     user_id: int
 
 
+class AdminKakaoTestSendRequest(BaseModel):
+    user_id: int
+    title: str = Field(default="오늘의 3 · 전송 테스트", min_length=1, max_length=80)
+    body: str = Field(
+        default="크롤링과 AI를 건너뛴 전송 테스트입니다.\n이 메시지가 보이면 나에게 보내기 연결이 정상입니다.",
+        min_length=1,
+        max_length=900,
+    )
+
+
+class AdminKakaoTestSendOut(BaseModel):
+    ok: bool
+    user_id: int
+    display_name: str
+    kakao_connected: bool
+    error_message: str = ""
+
+
 class DigestCandidateOut(BaseModel):
     kind: str
     title: str

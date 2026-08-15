@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from time import perf_counter
@@ -22,12 +23,18 @@ from app.services.run_resources import peak_sampler
 from app.services.sources import SourceItem, candidates_as_prompt_block, gather_candidates
 
 SEOUL = "Asia/Seoul"
+ProgressCb = Callable[[str], None]
+
+
+def _emit(on_progress: ProgressCb | None, step: str) -> None:
+    if on_progress:
+        on_progress(step)
 
 _CURATED: list[dict[str, str]] = [
     {
         "kind": "아티클",
         "title": "미국 증시·금리, 오늘만 필요한 요약",
-        "blurb": "연준 발언 이후 기술주가 흔들렸지만, 인하 기대는 한 박자 늦춰졌다는 해석. 나스닥·국채 금리만 짚은 단기 브리핑.",
+        "blurb": "연준 발언 이후 기술주가 흔들렸지만, 인하 기대는 한 박자 늦춰졌다는 해석입니다. 나스닥·국채 금리만 짚은 단기 브리핑입니다.",
         "url": "https://news.google.com/rss/search?q=US+stock+market&hl=en-US&gl=US&ceid=US:en",
         "hint": "경제",
         "insight_q": "금리가 주가와 성장주에 미치는 영향은 무엇일까?",
@@ -36,7 +43,7 @@ _CURATED: list[dict[str, str]] = [
     {
         "kind": "커뮤니티",
         "title": "국내주식 토론 — 숫자부터 보기",
-        "blurb": "종목 감정보다 공시·수급·밸류에이션을 먼저 보자는 스레드. 과열·저평가 주장이 갈리는 지점만 추림.",
+        "blurb": "종목 감정보다 공시·수급·밸류에이션을 먼저 보자는 스레드입니다. 과열·저평가 주장이 갈리는 지점만 추렸습니다.",
         "url": "https://finance.naver.com/",
         "hint": "경제",
         "insight_q": "공시·수급 숫자가 주가 해석에 왜 중요할까?",
@@ -45,7 +52,7 @@ _CURATED: list[dict[str, str]] = [
     {
         "kind": "유튜브",
         "title": "삼프로TV · 시장 브리핑",
-        "blurb": "국내 시황과 해외 이슈를 한 편에 묶어, 오늘 장에서 볼 포인트만 짧게 정리한 브리핑 영상.",
+        "blurb": "국내 시황과 해외 이슈를 한 편에 묶어, 오늘 장에서 볼 포인트만 짧게 정리한 브리핑 영상입니다.",
         "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UChlgI3UHCOnwUGzWzbJEuYw",
         "hint": "주식",
         "insight_q": "오늘 시황에서 가장 먼저 확인할 지표는 무엇일까?",
@@ -246,6 +253,7 @@ def _llm_curate(
     pref: Preference,
     candidates: list[SourceItem],
     timings: dict[str, int] | None = None,
+    on_progress: ProgressCb | None = None,
 ) -> tuple[tuple[str, str, list[dict[str, str]]] | None, str, str]:
     settings = get_settings()
     if not settings.llm_configured:
@@ -260,20 +268,22 @@ def _llm_curate(
     insight_json = ""
     if insight_on:
         insight_rules = (
-            "각 item마다 insight_q·insight_url을 **하나씩만** 추가한다.\n"
-            "insight_q는 본문에서 자연스럽게 생길 수 있는 궁금증 한 문장이다 "
-            "(예: 금리 얘기면 '금리가 주가에 미치는 영향이 궁금해요').\n"
-            "insight_url은 그 궁금증을 해소하는 보조 링크다. 가능하면 후보 URL 중 "
-            "본문 url과 다른 것을 쓰고, 없으면 검색 URL도 허용한다.\n"
+            "각 item마다 insight_q·insight_url을 **하나씩만** 추가합니다.\n"
+            "insight_q는 본문에서 자연스럽게 생길 수 있는 궁금증 한 문장입니다 "
+            "(예: 금리 얘기면 '금리가 주가에 미치는 영향이 궁금합니다').\n"
+            "insight_url은 그 궁금증을 해소하는 보조 링크입니다. 가능하면 후보 URL 중 "
+            "본문 url과 다른 것을 쓰고, 없으면 검색 URL도 허용합니다.\n"
         )
         insight_json = ',"insight_q":"...","insight_url":"https://..."'
     prompt = (
-        "너는 '오늘의 3' 큐레이터다. 아래 후보 목록에서만 골라 카카오톡용 브리프를 한국어로 만든다.\n"
-        "반드시 후보에 있는 URL만 본문 url로 사용한다. URL을 지어내지 마라.\n"
-        "유튜브·아티클·커뮤니티를 가능하면 섞어 **딱 3개**.\n"
-        "각 item의 title은 짧은 제목, blurb는 제목과 URL 사이에 넣을 **내용 요약**이다.\n"
-        "blurb에는 헤드라인 요지·영상 설명·글 핵심을 1~2문장으로 담아라. 메타 코멘트(예: '15분짜리')만 쓰지 마라.\n"
-        "후보 summary가 있으면 그걸 다듬어 blurb로 쓰고, 없으면 title을 바탕으로 요약을 만든다.\n"
+        "너는 '오늘의 3' 큐레이터입니다. 아래 후보 목록에서만 골라 카카오톡용 브리프를 한국어로 만듭니다.\n"
+        "반드시 후보에 있는 URL만 본문 url로 사용합니다. URL을 지어내지 마세요.\n"
+        "유튜브·아티클·커뮤니티를 가능하면 섞어 **딱 3개**입니다.\n"
+        "각 item의 title은 짧은 제목, blurb는 제목과 URL 사이에 넣을 **내용 요약**입니다.\n"
+        "blurb에는 헤드라인 요지·영상 설명·글 핵심을 1~2문장으로 담으세요. 메타 코멘트(예: '15분짜리')만 쓰지 마세요.\n"
+        "후보 summary가 있으면 그걸 다듬어 blurb로 쓰고, 없으면 title을 바탕으로 요약을 만듭니다.\n"
+        "독자에게 보이는 한국어(title·blurb·insight_q)는 기본으로 합니다/습니다 체를 씁니다. "
+        "-다 체(한다/이다/됐다)와 반말은 쓰지 마세요. 커스터마이징에 다른 말투가 있으면 그걸 우선합니다.\n"
         f"{insight_rules}"
         "JSON만 출력:\n"
         '{"title":"오늘의 3 · M/D (요일)","items":[{"kind":"유튜브|아티클|커뮤니티","title":"...","blurb":"...","url":"https://..."'
@@ -347,6 +357,7 @@ def _llm_curate(
             title = f"오늘의 3 · {now.month}/{now.day} ({weekday})"
         if timings is not None:
             timings["aggregation_ms"] = elapsed_ms(agg_started)
+        _emit(on_progress, "format")
         fmt_started = perf_counter()
         body = _format_body(
             user.display_name or "당신",
@@ -385,7 +396,12 @@ class DigestPreview:
     format_ms: int = 0
 
 
-def build_digest_preview(db: Session, user: User, pref: Preference) -> DigestPreview:
+def build_digest_preview(
+    db: Session,
+    user: User,
+    pref: Preference,
+    on_progress: ProgressCb | None = None,
+) -> DigestPreview:
     trigger_started = perf_counter()
     topics = _topic_list(pref)
     sites = _source_list(pref)
@@ -397,12 +413,16 @@ def build_digest_preview(db: Session, user: User, pref: Preference) -> DigestPre
     settings = get_settings()
     trigger_ms = elapsed_ms(trigger_started)
 
+    _emit(on_progress, "crawl")
     crawl_started = perf_counter()
     candidates = gather_candidates(topics, preferred_sites=sites)
     crawl_ms = elapsed_ms(crawl_started)
 
     layer_ms: dict[str, int] = {"llm_ms": 0, "aggregation_ms": 0, "format_ms": 0}
-    llm, skip_reason, llm_raw = _llm_curate(db, user, pref, candidates, timings=layer_ms)
+    _emit(on_progress, "curate")
+    llm, skip_reason, llm_raw = _llm_curate(
+        db, user, pref, candidates, timings=layer_ms, on_progress=on_progress
+    )
     if llm:
         llm_title, llm_body, llm_items = llm
         return DigestPreview(
@@ -434,6 +454,7 @@ def build_digest_preview(db: Session, user: User, pref: Preference) -> DigestPre
         row["topic"] = topic.replace("/", " · ") if topic else ""
         labeled.append(row)
     aggregation_ms = elapsed_ms(agg_started)
+    _emit(on_progress, "format")
     fmt_started = perf_counter()
     body = _format_body(name, labeled, pref, topics, reviewed_count=len(candidates))
     format_ms = elapsed_ms(fmt_started)
@@ -472,12 +493,13 @@ def create_digest(
     trigger: str = "preview",
     slot_label: str = "",
     lead_ms: int = 0,
+    on_progress: ProgressCb | None = None,
 ) -> Digest:
     if pref.timezone != SEOUL:
         pref.timezone = SEOUL
         db.add(pref)
     with peak_sampler() as peak:
-        preview = build_digest_preview(db, user, pref)
+        preview = build_digest_preview(db, user, pref, on_progress=on_progress)
     digest = Digest(
         user_id=user.id,
         title=preview.title,

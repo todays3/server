@@ -15,6 +15,8 @@ from app.schemas import (
     AdminDailyPoint,
     AdminDigestPreviewOut,
     AdminDigestPreviewRequest,
+    AdminKakaoTestSendOut,
+    AdminKakaoTestSendRequest,
     AdminOverview,
     AdminPrefDetail,
     AdminUsageEvent,
@@ -35,6 +37,7 @@ from app.schemas import (
 from app.services.crawl_log import persist_crawl_run
 from app.services.digest import build_digest_preview
 from app.services.run_resources import peak_sampler
+from app.services.kakao import send_digest_via_kakao
 from app.services.pipeline_timing import (
     LAYER_KEYS,
     percentile,
@@ -494,6 +497,37 @@ def preview_digest_for_user(
             for c in preview.candidates
         ],
         sent_to_kakao=False,
+    )
+
+
+@router.post("/kakao/test-send", response_model=AdminKakaoTestSendOut)
+async def kakao_test_send(
+    payload: AdminKakaoTestSendRequest,
+    admin: Annotated[User, Depends(get_admin_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> AdminKakaoTestSendOut:
+    _ = admin
+    user = db.scalar(
+        select(User).options(joinedload(User.kakao)).where(User.id == payload.user_id)
+    )
+    if user is None:
+        raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다")
+    connected = user.kakao is not None and bool(user.kakao.access_token)
+    if not connected:
+        return AdminKakaoTestSendOut(
+            ok=False,
+            user_id=user.id,
+            display_name=user.display_name,
+            kakao_connected=False,
+            error_message="카카오 나에게 보내기가 연결되지 않았습니다",
+        )
+    ok, err = await send_digest_via_kakao(user, payload.title, payload.body, db=db)
+    return AdminKakaoTestSendOut(
+        ok=ok,
+        user_id=user.id,
+        display_name=user.display_name,
+        kakao_connected=True,
+        error_message=err,
     )
 
 

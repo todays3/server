@@ -27,6 +27,7 @@ def connect_kakao(user: Annotated[User, Depends(get_current_user)]) -> KakaoConn
     url = kakao_service.build_authorize_url(
         _encode_oauth_state(purpose="connect", user_id=user.id),
         prompt="consent",
+        scopes=kakao_service.MEMO_SCOPES,
     )
     return KakaoConnectOut(configured=True, url=url)
 

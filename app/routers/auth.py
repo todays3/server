@@ -148,7 +148,7 @@ def kakao_oauth_start(
             message="KAKAO_REST_API_KEY가 없습니다. 카카오 개발자 콘솔에서 키와 Redirect URI를 설정하세요.",
         )
     state = _encode_oauth_state(purpose="login")
-    url = kakao_service.build_authorize_url(state)
+    url = kakao_service.build_authorize_url(state, scopes=kakao_service.MEMO_SCOPES)
     return KakaoOAuthStartOut(configured=True, url=url)
 
 
@@ -161,7 +161,7 @@ def kakao_oauth_redirect(
     if not settings.kakao_configured:
         return _front_redirect(error="kakao_not_configured")
     state = _encode_oauth_state(purpose="login")
-    return RedirectResponse(url=kakao_service.build_authorize_url(state))
+    return RedirectResponse(url=kakao_service.build_authorize_url(state, scopes=kakao_service.MEMO_SCOPES))
 
 
 @router.get("/kakao/callback")
