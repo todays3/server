@@ -264,6 +264,35 @@ class AdminOverview(BaseModel):
     recent: list[AdminUsageEvent]
 
 
+class SourceFeedProbeOut(BaseModel):
+    channel: str
+    kind: str
+    name: str
+    url: str
+    ok: bool
+    status_code: int | None = None
+    item_count: int = 0
+    sample_titles: list[str] = Field(default_factory=list)
+    error: str = ""
+
+
+class SourceSiteProbeOut(BaseModel):
+    site_id: str
+    label: str
+    ok: bool | None = None
+    probed_at: datetime | None = None
+    duration_ms: int = 0
+    item_count: int = 0
+    feeds: list[SourceFeedProbeOut] = Field(default_factory=list)
+
+
+class SourceProbeListOut(BaseModel):
+    ok_count: int = 0
+    fail_count: int = 0
+    unknown_count: int = 0
+    sites: list[SourceSiteProbeOut]
+
+
 class RefSiteOut(BaseModel):
     id: str
     label: str

@@ -18,8 +18,13 @@ from app.schemas import (
     AdminUsageSummary,
     AdminUserDetail,
     AdminUserOut,
+    SourceFeedProbeOut,
+    SourceProbeListOut,
+    SourceSiteProbeOut,
 )
 from app.services.send_times import parse_send_times_raw
+from app.services.source_probe import list_probe_snapshot, probe_all_sites, probe_site, summarize
+from app.services.sources import collector_site_ids
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 SEOUL = ZoneInfo("Asia/Seoul")
@@ -324,3 +329,62 @@ def reject_user(
     db.commit()
     db.refresh(user)
     return user
+
+
+def _feed_out(feed) -> SourceFeedProbeOut:
+    return SourceFeedProbeOut(
+        channel=feed.channel,
+        kind=feed.kind,
+        name=feed.name,
+        url=feed.url,
+        ok=feed.ok,
+        status_code=feed.status_code,
+        item_count=feed.item_count,
+        sample_titles=feed.sample_titles,
+        error=feed.error,
+    )
+
+
+def _site_out(probe) -> SourceSiteProbeOut:
+    return SourceSiteProbeOut(
+        site_id=probe.site_id,
+        label=probe.label,
+        ok=probe.ok,
+        probed_at=probe.probed_at,
+        duration_ms=probe.duration_ms,
+        item_count=probe.item_count,
+        feeds=[_feed_out(feed) for feed in probe.feeds],
+    )
+
+
+def _list_out(sites) -> SourceProbeListOut:
+    ok_count, fail_count, unknown_count = summarize(sites)
+    return SourceProbeListOut(
+        ok_count=ok_count,
+        fail_count=fail_count,
+        unknown_count=unknown_count,
+        sites=[_site_out(site) for site in sites],
+    )
+
+
+@router.get("/sources/probes", response_model=SourceProbeListOut)
+def get_source_probes(admin: Annotated[User, Depends(get_admin_user)]) -> SourceProbeListOut:
+    _ = admin
+    return _list_out(list_probe_snapshot())
+
+
+@router.post("/sources/probes", response_model=SourceProbeListOut)
+def run_all_source_probes(admin: Annotated[User, Depends(get_admin_user)]) -> SourceProbeListOut:
+    _ = admin
+    return _list_out(probe_all_sites())
+
+
+@router.post("/sources/probes/{site_id}", response_model=SourceSiteProbeOut)
+def run_one_source_probe(
+    site_id: str,
+    admin: Annotated[User, Depends(get_admin_user)],
+) -> SourceSiteProbeOut:
+    _ = admin
+    if site_id not in collector_site_ids():
+        raise HTTPException(status_code=404, detail="알 수 없는 수집 소스입니다")
+    return _site_out(probe_site(site_id))

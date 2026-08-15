@@ -125,7 +125,16 @@ def _youtube_feeds_for_topics(topics: list[str]) -> list[tuple[str, str, str]]:
     return out
 
 
-def _http_get(url: str, *, timeout: float = 12.0) -> str | None:
+@dataclass
+class FetchResult:
+    url: str
+    ok: bool
+    status_code: int | None
+    body: str
+    error: str
+
+
+def _fetch(url: str, *, timeout: float = 12.0) -> FetchResult:
     try:
         with httpx.Client(
             timeout=timeout,
@@ -138,17 +147,18 @@ def _http_get(url: str, *, timeout: float = 12.0) -> str | None:
         ) as client:
             resp = client.get(url)
             if resp.status_code >= 400:
-                return None
-            return resp.text
-    except Exception:
-        return None
+                return FetchResult(url, False, resp.status_code, "", f"HTTP {resp.status_code}")
+            return FetchResult(url, True, resp.status_code, resp.text, "")
+    except Exception as exc:  # noqa: BLE001 — probe/gather soft-fail
+        return FetchResult(url, False, None, "", str(exc)[:200])
 
 
-def _parse_feed(kind: str, source: str, url: str, *, limit: int = 5) -> list[SourceItem]:
-    raw = _http_get(url)
-    if not raw:
-        return []
+def _http_get(url: str, *, timeout: float = 12.0) -> str | None:
+    fetched = _fetch(url, timeout=timeout)
+    return fetched.body if fetched.ok else None
 
+
+def _parse_feed_body(kind: str, source: str, url: str, raw: str, *, limit: int = 5) -> list[SourceItem]:
     parsed = feedparser.parse(raw)
     items: list[SourceItem] = []
     for entry in parsed.entries[:limit]:
@@ -161,6 +171,13 @@ def _parse_feed(kind: str, source: str, url: str, *, limit: int = 5) -> list[Sou
             SourceItem(kind=kind, title=title, url=link, summary=summary or source, source=source)
         )
     return items
+
+
+def _parse_feed(kind: str, source: str, url: str, *, limit: int = 5) -> list[SourceItem]:
+    raw = _http_get(url)
+    if not raw:
+        return []
+    return _parse_feed_body(kind, source, url, raw, limit=limit)
 
 
 class _AnchorCollector(HTMLParser):
@@ -191,9 +208,9 @@ class _AnchorCollector(HTMLParser):
         self._parts = []
 
 
-def _parse_html_list(spec: HtmlListSpec, *, query: str = "") -> list[SourceItem]:
+def _parse_html_list(spec: HtmlListSpec, *, query: str = "", body: str | None = None) -> list[SourceItem]:
     url = spec.url.replace("{q}", quote_plus(query or "technology"))
-    raw = _http_get(url)
+    raw = body if body is not None else _http_get(url)
     if not raw:
         return []
 
@@ -535,6 +552,14 @@ def _html_for_sites(site_ids: list[str], topics: list[str]) -> list[SourceItem]:
                 seen.add(item.url)
                 collected.append(item)
     return collected
+
+
+def site_feed_catalog() -> dict[str, list[tuple[str, str, str]]]:
+    return _SITE_FEEDS
+
+
+def site_html_catalog() -> dict[str, list[HtmlListSpec]]:
+    return _SITE_HTML
 
 
 def collector_site_ids() -> set[str]:
