@@ -4,6 +4,8 @@ from app.models import Digest, PushDevice, User
 from app.services.delivery import deliver_digest
 from app.services.fcm import (
     MAX_DEVICES_PER_USER,
+    fcm_web_message,
+    firebase_messaging_sw_source,
     notify_digest_sent,
     prune_invalid_tokens,
     register_push_device,
@@ -45,6 +47,51 @@ def test_same_device_id_rotates_token(db_session):
     db_session.commit()
     rows = db_session.query(PushDevice).filter_by(user_id=user.id).all()
     assert [row.token for row in rows] == ["new-token"]
+
+
+def test_fcm_web_message_is_data_only_so_chrome_does_not_auto_display():
+    payload = fcm_web_message("device-token", "하루만장 · 8/16", "미리보기")
+    message = payload["message"]
+    assert "notification" not in message
+    assert "notification" not in message.get("webpush", {})
+    assert message["data"]["title"] == "하루만장 · 8/16"
+    assert message["data"]["body"] == "미리보기"
+    assert message["data"]["url"] == "/app"
+
+
+def test_fcm_sw_skips_show_when_fcm_already_displayed_notification(monkeypatch):
+    monkeypatch.setenv("FIREBASE_WEB_API_KEY", "web-key")
+    monkeypatch.setenv("FIREBASE_WEB_APP_ID", "1:1:web:abc")
+    monkeypatch.setenv("FIREBASE_WEB_MESSAGING_SENDER_ID", "123")
+    monkeypatch.setenv("FIREBASE_WEB_VAPID_KEY", "vapid")
+    monkeypatch.setenv("FIREBASE_PROJECT_ID", "demo-proj")
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    try:
+        src = firebase_messaging_sw_source()
+    finally:
+        get_settings.cache_clear()
+    assert "onBackgroundMessage" in src
+    assert "if (n.title || n.body)" in src
+    assert "showNotification" in src
+    assert "todays3-digest" in src
+
+
+def test_notify_sends_once_per_device_even_when_kakao_body_is_long(db_session):
+    user = _user(db_session)
+    register_push_device(db_session, user.id, token="only-phone", platform="web", device_id="phone")
+    db_session.commit()
+    sent: list[tuple[str, str]] = []
+
+    def send_one(token: str, title: str, body: str) -> str:
+        sent.append((token, title))
+        _ = body
+        return "ok"
+
+    n = notify_digest_sent(db_session, user.id, "하루만장", "가" * 2500, send_one=send_one)
+    assert n == 1
+    assert sent == [("only-phone", "하루만장")]
 
 
 def test_notify_sends_to_every_device_and_drops_gone_tokens(db_session):

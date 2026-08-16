@@ -66,10 +66,14 @@ def firebase_messaging_sw_source() -> str:
         "const messaging = firebase.messaging();\n"
         "messaging.onBackgroundMessage((payload) => {\n"
         "  const n = (payload && payload.notification) || {};\n"
+        "  if (n.title || n.body) {\n"
+        "    return;\n"
+        "  }\n"
         "  const data = (payload && payload.data) || {};\n"
-        "  return self.registration.showNotification(n.title || '하루만장', {\n"
-        "    body: n.body || '카카오톡으로 하루만장을 보냈습니다',\n"
+        "  return self.registration.showNotification(data.title || '하루만장', {\n"
+        "    body: data.body || '카카오톡으로 하루만장을 보냈습니다',\n"
         "    icon: '/pwa-192x192.png',\n"
+        "    tag: 'todays3-digest',\n"
         "    data: data,\n"
         "  });\n"
         "});\n"
@@ -182,6 +186,21 @@ def notify_digest_sent(
     return sent
 
 
+def fcm_web_message(token: str, title: str, body: str) -> dict[str, object]:
+    """Data-only web payload. A `notification` block makes Chrome display once and
+    the service worker display again."""
+    settings = get_settings()
+    return {
+        "message": {
+            "token": token,
+            "data": {"title": title, "body": body, "url": "/app"},
+            "webpush": {
+                "fcm_options": {"link": f"{settings.frontend_origin.rstrip('/')}/app"},
+            },
+        }
+    }
+
+
 def fcm_send_one(token: str, title: str, body: str) -> str:
     if not fcm_send_configured():
         return "skip"
@@ -189,17 +208,7 @@ def fcm_send_one(token: str, title: str, body: str) -> str:
     try:
         access = _google_access_token()
         url = f"https://fcm.googleapis.com/v1/projects/{settings.firebase_project_id}/messages:send"
-        payload = {
-            "message": {
-                "token": token,
-                "notification": {"title": title, "body": body},
-                "data": {"url": "/app"},
-                "webpush": {
-                    "fcm_options": {"link": f"{settings.frontend_origin.rstrip('/')}/app"},
-                    "notification": {"title": title, "body": body, "icon": "/pwa-192x192.png"},
-                },
-            }
-        }
+        payload = fcm_web_message(token, title, body)
         response = httpx.post(
             url,
             headers={"Authorization": f"Bearer {access}", "Content-Type": "application/json"},
