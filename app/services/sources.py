@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
+from datetime import datetime
 from html.parser import HTMLParser
 from urllib.parse import quote_plus, urljoin, urlparse
 
 import feedparser
 
 from app.services.curate_limits import GATHER_FETCH_CAP, GATHER_MAX_ITEMS
+from app.services.freshness import is_fresh, resolve_published_at
 
 
 @dataclass
@@ -27,6 +29,7 @@ class SourceItem:
     source: str
     site_id: str = ""
     pick_reason: str = ""
+    published_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -168,10 +171,18 @@ def _http_get(url: str, *, timeout: float = 12.0) -> str | None:
     return fetched.body if fetched.ok else None
 
 
-def _parse_feed_body(kind: str, source: str, url: str, raw: str, *, limit: int = 5) -> list[SourceItem]:
+def _parse_feed_body(
+    kind: str,
+    source: str,
+    url: str,
+    raw: str,
+    *,
+    limit: int = 5,
+    now: datetime | None = None,
+) -> list[SourceItem]:
     parsed = feedparser.parse(raw)
     items: list[SourceItem] = []
-    scan_limit = max(limit * 8, limit) if kind == "유튜브" else limit
+    scan_limit = max(limit * 8, 40)
     for entry in parsed.entries[:scan_limit]:
         link = getattr(entry, "link", "") or ""
         title = _clean(getattr(entry, "title", "") or "제목 없음", 120)
@@ -183,8 +194,18 @@ def _parse_feed_body(kind: str, source: str, url: str, raw: str, *, limit: int =
 
             if not meets_view_floor(views_from_feed_entry(entry)):
                 continue
+        published_at = resolve_published_at(feed_entry=entry, title=title, url=link, now=now)
+        if not is_fresh(published_at, now=now):
+            continue
         items.append(
-            SourceItem(kind=kind, title=title, url=link, summary=summary or source, source=source)
+            SourceItem(
+                kind=kind,
+                title=title,
+                url=link,
+                summary=summary or source,
+                source=source,
+                published_at=published_at,
+            )
         )
         if len(items) >= limit:
             break
@@ -226,7 +247,13 @@ class _AnchorCollector(HTMLParser):
         self._parts = []
 
 
-def _parse_html_list(spec: HtmlListSpec, *, query: str = "", body: str | None = None) -> list[SourceItem]:
+def _parse_html_list(
+    spec: HtmlListSpec,
+    *,
+    query: str = "",
+    body: str | None = None,
+    now: datetime | None = None,
+) -> list[SourceItem]:
     url = spec.url.replace("{q}", quote_plus(query or "technology"))
     raw = body if body is not None else _http_get(url)
     if not raw:
@@ -283,6 +310,11 @@ def _parse_html_list(spec: HtmlListSpec, *, query: str = "", body: str | None = 
             if len(segs) != 2:
                 continue
         seen.add(abs_url)
+        published_at = resolve_published_at(title=title, url=abs_url, now=now)
+        if spec.kind == "아티클" and published_at is None:
+            continue
+        if not is_fresh(published_at, now=now):
+            continue
         items.append(
             SourceItem(
                 kind=spec.kind,
@@ -290,6 +322,7 @@ def _parse_html_list(spec: HtmlListSpec, *, query: str = "", body: str | None = 
                 url=abs_url,
                 summary=f"{spec.source} 목록에서 수집",
                 source=spec.source,
+                published_at=published_at,
             )
         )
         if len(items) >= spec.limit:

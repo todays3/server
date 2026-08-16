@@ -8,6 +8,7 @@ from __future__ import annotations
 import httpx
 
 from app.config import get_settings
+from app.services.freshness import is_fresh, parse_datetime
 
 API_BASE = "https://www.googleapis.com/youtube/v3"
 MIN_YOUTUBE_VIEWS = 10_000
@@ -117,12 +118,14 @@ def _item_from_playlist(entry: dict, label: str):
     if not video_id or not title or title in {".", "Private video", "Deleted video"}:
         return None
     desc = str(snippet.get("description") or "").replace("\n", " ").strip()[:220]
+    published_at = parse_datetime(str(snippet.get("publishedAt") or ""))
     return SourceItem(
         kind="유튜브",
         title=title[:120],
         url=watch_url(video_id),
         summary=desc or f"{label} 최신 영상",
         source=label,
+        published_at=published_at,
     )
 
 
@@ -136,12 +139,14 @@ def _item_from_search(entry: dict, label: str):
         return None
     desc = str(snippet.get("description") or "").replace("\n", " ").strip()[:220]
     channel = str(snippet.get("channelTitle") or label)
+    published_at = parse_datetime(str(snippet.get("publishedAt") or ""))
     return SourceItem(
         kind="유튜브",
         title=title[:120],
         url=watch_url(video_id),
         summary=desc or f"{channel} 영상",
         source=channel,
+        published_at=published_at,
     )
 
 
@@ -172,6 +177,8 @@ def fetch_channel_videos(channel_id: str, label: str, *, limit: int = 5) -> list
     items = []
     for vid, row in mapped:
         if not meets_view_floor(counts.get(vid)):
+            continue
+        if not is_fresh(row.published_at):
             continue
         items.append(row)
         if len(items) >= limit:
@@ -211,6 +218,8 @@ def search_videos(query: str, *, limit: int = 5) -> list:
     items = []
     for vid, row in mapped:
         if not meets_view_floor(counts.get(vid)):
+            continue
+        if not is_fresh(row.published_at):
             continue
         items.append(row)
         if len(items) >= limit:
