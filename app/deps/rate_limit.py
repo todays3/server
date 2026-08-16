@@ -9,7 +9,9 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
 
+from app.auth import get_current_user
 from app.config import get_settings
+from app.models import User
 
 
 class SlidingWindowLimiter:
@@ -64,4 +66,15 @@ def rate_limit_hooks(
         f"hooks:{ip}:{request.url.path}",
         max_calls=settings.rate_limit_hooks_max,
         window_seconds=settings.rate_limit_hooks_window_seconds,
+    )
+
+
+def rate_limit_notes(
+    user: Annotated[User, Depends(get_current_user)],
+) -> None:
+    settings = get_settings()
+    _limiter.check(
+        f"notes:{user.id}",
+        max_calls=settings.rate_limit_notes_max,
+        window_seconds=settings.rate_limit_notes_window_seconds,
     )

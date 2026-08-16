@@ -1,4 +1,4 @@
-"""Generate '오늘의 3' — three curated links from live sources (+ optional free LLM)."""
+"""Generate '하루만장' — three curated links from live sources (+ optional free LLM)."""
 
 from __future__ import annotations
 
@@ -6,10 +6,10 @@ import hashlib
 import json
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from time import perf_counter
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
@@ -20,6 +20,8 @@ from app.services import llm as llm_service
 from app.services.crawl_log import persist_crawl_run
 from app.services.pipeline_timing import elapsed_ms
 from app.services.run_resources import peak_sampler
+from app.services.pick_reason import KIND_WHY, clip_why, compose_pick_reason
+from app.services.shortlist import shortlist_for_llm, topic_tokens
 from app.services.sources import SourceItem, candidates_as_prompt_block, gather_candidates
 
 SEOUL = "Asia/Seoul"
@@ -138,8 +140,64 @@ def profile_brief(user: User, *, today: date | None = None) -> str:
         f"직업: {occ}\n"
         f"연령대: {band}\n"
         "직업·연령대에 실질적으로 도움이 되는 후보를 우선하고, 말투는 그 독자에 맞춥니다. "
-        "생년월일·나이를 본문에 숫자로 쓰지 마세요."
+        "생년월일·나이를 본문에 숫자로 쓰지 마세요. "
+        "독자는 한국 사용자이므로 한국어 아티클·한국 영상을 우선하세요."
     )
+
+
+_HANGUL = re.compile(r"[가-힣]")
+_KR_HOST_MARKERS = (
+    ".kr",
+    "naver.com",
+    "daum.net",
+    "kakao.com",
+    "tistory.com",
+    "velog.io",
+    "bloter.net",
+    "clien.net",
+    "dcinside.com",
+    "chosun.com",
+    "joongang.co.kr",
+    "hani.co.kr",
+    "mk.co.kr",
+    "hankyung.com",
+    "yonhapnews",
+    "yna.co.kr",
+    "ytn.co.kr",
+    "sbs.co.kr",
+    "kbs.co.kr",
+    "mbc.co.kr",
+    "ppomppu.co.kr",
+    "okky.kr",
+    "wanted.co.kr",
+    "d2.naver.com",
+    "techblogposts.com",
+    "surfit.io",
+    "disquiet.io",
+    "innoforest.co.kr",
+    "eopla.net",
+    "rocketpunch.com",
+    "designcompass.org",
+)
+
+
+def korean_content_score(item: SourceItem) -> int:
+    title = item.title or ""
+    summary = item.summary or ""
+    source = item.source or ""
+    score = 0
+    if _HANGUL.search(title):
+        score += 4
+    if _HANGUL.search(summary):
+        score += 2
+    if _HANGUL.search(source):
+        score += 1
+    host = urlparse(item.url).netloc.lower()
+    if any(marker in host for marker in _KR_HOST_MARKERS):
+        score += 3
+    if item.kind == "유튜브" and (_HANGUL.search(title) or _HANGUL.search(source)):
+        score += 3
+    return score
 
 
 def personalize_candidates(candidates: list[SourceItem], user: User) -> list[SourceItem]:
@@ -147,14 +205,40 @@ def personalize_candidates(candidates: list[SourceItem], user: User) -> list[Sou
     band = age_band(getattr(user, "birth_date", None))
     if band:
         tokens = [*tokens, band]
-    if not tokens or not candidates:
+    if not candidates:
         return candidates
 
-    def score(item: SourceItem) -> int:
+    def occupation_hits(item: SourceItem) -> int:
+        if not tokens:
+            return 0
         blob = f"{item.title} {item.summary} {item.source}".lower()
         return sum(1 for token in tokens if token.lower() in blob)
 
-    return sorted(candidates, key=score, reverse=True)
+    def score(item: SourceItem) -> tuple[int, int]:
+        return (occupation_hits(item), korean_content_score(item))
+
+    ranked = sorted(candidates, key=score, reverse=True)
+    return [
+        replace(
+            item,
+            pick_reason=compose_pick_reason(item, job_match=occupation_hits(item) > 0),
+        )
+        for item in ranked
+    ]
+
+
+def llm_shortlist(candidates: list[SourceItem], user: User, topics: list[str]) -> list[SourceItem]:
+    job = occupation_tokens(getattr(user, "occupation", "") or "")
+    band = age_band(getattr(user, "birth_date", None))
+    if band:
+        job = [*job, band]
+    korean_scores = {item.url: korean_content_score(item) for item in candidates}
+    return shortlist_for_llm(
+        candidates,
+        job_tokens=job,
+        topic_parts=topic_tokens(topics),
+        korean_scores=korean_scores,
+    )
 
 
 def _wants_insights(pref: Preference) -> bool:
@@ -171,7 +255,27 @@ def _kind_emoji(kind: str) -> str:
 
 def reviewed_line(count: int) -> str:
     n = max(count, 1)
-    return f"{n}개의 아티클을 종합 검수했습니다"
+    return f"{n}개 중 골랐습니다."
+
+
+_ITEM_RULE = "────────"
+_ORDINALS = ("첫째", "둘째", "셋째", "넷째", "다섯째")
+
+
+def _lead_sentence(text: str, *, max_len: int = 80) -> str:
+    raw = " ".join((text or "").split())
+    if not raw:
+        return ""
+    earliest: tuple[int, str] | None = None
+    for mark in ("습니다.", "입니다.", "할까요?", "까요?", "다.", "요.", ". ", "? ", "! "):
+        idx = raw.find(mark)
+        if idx >= 0 and (earliest is None or idx < earliest[0]):
+            earliest = (idx, mark)
+    if earliest is not None:
+        raw = raw[: earliest[0] + len(earliest[1])]
+    if len(raw) <= max_len:
+        return raw
+    return raw[: max_len - 1].rstrip() + "…"
 
 
 def _format_body(
@@ -183,35 +287,41 @@ def _format_body(
     reviewed_count: int | None = None,
 ) -> str:
     n = reviewed_count if reviewed_count is not None else len(items)
+    _ = topics
+    picked = max(len(items), 1)
     lines: list[str] = [
-        reviewed_line(n),
-        "",
-        f"📬 {name}님을 위한 오늘의 3",
+        f"하루만장 · {name}님",
+        f"오늘 고른 {picked}개입니다.",
         "",
     ]
     show_insight = _wants_insights(pref)
-    for i, item in enumerate(items, start=1):
-        topic = topics[(i - 1) % len(topics)] if topics else item.get("hint", "")
+    for i, item in enumerate(items):
+        if i:
+            lines.append(_ITEM_RULE)
+            lines.append("")
+        ordinal = _ORDINALS[i] if i < len(_ORDINALS) else f"{i + 1}"
         kind = item.get("kind") or "아티클"
         emoji = _kind_emoji(kind)
-        lines.append(f"{i}) {emoji} [{kind}] {item['title']}")
-        blurb = (item.get("blurb") or item.get("summary") or "").strip()
+        title = (item.get("title") or "").strip()
+        lines.append(f"{ordinal}. {emoji} {title}")
+        blurb = _lead_sentence(item.get("blurb") or item.get("summary") or "")
         if blurb:
-            lines.append(f"   {blurb}")
-        if topic:
-            lines.append(f"   주제: {topic.replace('/', ' · ')}")
-        lines.append(f"   {item['url']}")
+            lines.append(blurb)
+        why = clip_why(item.get("why") or "")
+        if why:
+            lines.append(f"왜 {why}")
+        lines.append(str(item.get("url") or ""))
         if show_insight:
-            iq = (item.get("insight_q") or "").strip()
+            iq = _lead_sentence(item.get("insight_q") or "", max_len=60)
             iu = (item.get("insight_url") or "").strip()
             if iq and iu:
-                lines.append(f"   ✨ 인사이트: {iq}")
-                lines.append(f"   → {iu}")
+                lines.append(f"궁금 {iq}")
+                lines.append(iu)
         lines.append("")
     custom = _customization(pref)
     if custom:
-        lines.append(f"요청 반영: {custom}")
-    lines.append("— 오늘의 3")
+        lines.append(f"요청: {custom}")
+    lines.append(reviewed_line(n))
     return "\n".join(lines).strip()
 
 
@@ -264,6 +374,21 @@ def _attach_insights(
     return out
 
 
+def _why_for_item(item: dict[str, str], candidates: list[SourceItem]) -> str:
+    existing = clip_why(item.get("why") or "")
+    if existing:
+        return existing
+    url = item.get("url") or ""
+    match = next((c for c in candidates if c.url == url), None)
+    if match:
+        return clip_why(match.pick_reason or compose_pick_reason(match))
+    return clip_why(KIND_WHY.get(item.get("kind") or "", "오늘 후보 중 선별"))
+
+
+def _attach_why(items: list[dict[str, str]], candidates: list[SourceItem]) -> list[dict[str, str]]:
+    return [{**item, "why": _why_for_item(item, candidates)} for item in items]
+
+
 def _heuristic_pick(candidates: list[SourceItem], seed: str) -> list[dict[str, str]]:
     """Pick up to 3 items from an already-ranked list, preferring kind diversity."""
     if not candidates:
@@ -293,6 +418,7 @@ def _heuristic_pick(candidates: list[SourceItem], seed: str) -> list[dict[str, s
             "blurb": _summary_blurb(p),
             "url": p.url,
             "hint": p.source,
+            "why": clip_why(p.pick_reason or compose_pick_reason(p)),
         }
         for p in picked[:3]
     ]
@@ -317,6 +443,7 @@ def _static_fallback(topics: list[str], seed: str) -> list[dict[str, str]]:
             "hint": x["hint"],
             "insight_q": x.get("insight_q", ""),
             "insight_url": x.get("insight_url", ""),
+            "why": "고정 큐레이션",
         }
         for x in ordered[:3]
     ]
@@ -329,12 +456,15 @@ def _llm_curate(
     candidates: list[SourceItem],
     timings: dict[str, int] | None = None,
     on_progress: ProgressCb | None = None,
+    *,
+    pool: list[SourceItem] | None = None,
 ) -> tuple[tuple[str, str, list[dict[str, str]]] | None, str, str]:
     settings = get_settings()
     if not settings.llm_configured:
         return None, "llm_not_configured", ""
     if not candidates:
         return None, "no_candidates", ""
+    reviewed = pool if pool is not None else candidates
 
     topics = ", ".join(_topic_list(pref)) or "일반"
     custom = _customization(pref) or "(없음)"
@@ -351,17 +481,22 @@ def _llm_curate(
         )
         insight_json = ',"insight_q":"...","insight_url":"https://..."'
     prompt = (
-        "너는 '오늘의 3' 큐레이터입니다. 아래 후보 목록에서만 골라 카카오톡용 브리프를 한국어로 만듭니다.\n"
+        "너는 '하루만장' 큐레이터입니다. 아래 후보 목록에서만 골라 카카오톡용 브리프를 한국어로 만듭니다.\n"
+        "독자는 한국 사용자입니다. 한국어 제목·요약인 아티클과 한국 채널 영상을 우선하세요. "
+        "영어 전용 후보는 한국어 후보가 부족할 때만 고릅니다.\n"
         "반드시 후보에 있는 URL만 본문 url로 사용합니다. URL을 지어내지 마세요.\n"
         "유튜브·아티클·커뮤니티를 가능하면 섞어 **딱 3개**입니다.\n"
-        "각 item의 title은 짧은 제목, blurb는 제목과 URL 사이에 넣을 **내용 요약**입니다.\n"
-        "blurb에는 헤드라인 요지·영상 설명·글 핵심을 1~2문장으로 담으세요. 메타 코멘트(예: '15분짜리')만 쓰지 마세요.\n"
+        "각 item의 title은 짧은 제목, blurb는 제목 바로 아래 넣을 **핵심 한 문장**입니다.\n"
+        "blurb는 두괄식입니다. 요지를 첫 문장에 쓰고, 두 문장 이상으로 늘리지 마세요. "
+        "메타 코멘트(예: '15분짜리')만 쓰지 마세요.\n"
         "후보 summary가 있으면 그걸 다듬어 blurb로 쓰고, 없으면 title을 바탕으로 요약을 만듭니다.\n"
         "독자에게 보이는 한국어(title·blurb·insight_q)는 기본으로 합니다/습니다 체를 씁니다. "
         "-다 체(한다/이다/됐다)와 반말은 쓰지 마세요. 커스터마이징에 다른 말투가 있으면 그걸 우선합니다.\n"
+        "후보 줄의 why는 사이트별 선정 신호입니다(급상승·공식 블로그·조회수 하한 등). "
+        "이 신호를 보고 고르세요. 조회수·좋아요·저자를 지어내지 마세요.\n"
         f"{insight_rules}"
         "JSON만 출력:\n"
-        '{"title":"오늘의 3 · M/D (요일)","items":[{"kind":"유튜브|아티클|커뮤니티","title":"...","blurb":"...","url":"https://..."'
+        '{"title":"하루만장 · M/D (요일)","items":[{"kind":"유튜브|아티클|커뮤니티","title":"...","blurb":"...","url":"https://..."'
         f"{insight_json}"
         "}]}\n"
         f"수신자: {user.display_name}\n"
@@ -411,6 +546,7 @@ def _llm_curate(
                 "url": url,
                 "hint": "",
             }
+            row["why"] = _why_for_item(row, reviewed)
             if insight_on:
                 row["insight_q"] = str(raw.get("insight_q") or "")[:120]
                 insight_url = str(raw.get("insight_url") or "").strip()
@@ -421,7 +557,7 @@ def _llm_curate(
             if timings is not None:
                 timings["aggregation_ms"] = elapsed_ms(agg_started)
             return None, "fewer_than_3_valid_urls", text[:2000]
-        cleaned = _attach_insights(cleaned, pref=pref, candidates=candidates)
+        cleaned = _attach_why(_attach_insights(cleaned, pref=pref, candidates=reviewed), reviewed)
         topics_list = _topic_list(pref)
         for i, row in enumerate(cleaned):
             topic = topics_list[i % len(topics_list)] if topics_list else ""
@@ -430,7 +566,7 @@ def _llm_curate(
         if not title:
             now = datetime.now(ZoneInfo(SEOUL))
             weekday = ["월", "화", "수", "목", "금", "토", "일"][now.weekday()]
-            title = f"오늘의 3 · {now.month}/{now.day} ({weekday})"
+            title = f"하루만장 · {now.month}/{now.day} ({weekday})"
         if timings is not None:
             timings["aggregation_ms"] = elapsed_ms(agg_started)
         _emit(on_progress, "format")
@@ -440,7 +576,7 @@ def _llm_curate(
             cleaned,
             pref,
             topics_list,
-            reviewed_count=len(candidates),
+            reviewed_count=len(reviewed),
         )
         if timings is not None:
             timings["format_ms"] = elapsed_ms(fmt_started)
@@ -477,6 +613,7 @@ def build_digest_preview(
     user: User,
     pref: Preference,
     on_progress: ProgressCb | None = None,
+    shared_candidates: list[SourceItem] | None = None,
 ) -> DigestPreview:
     trigger_started = perf_counter()
     topics = _topic_list(pref)
@@ -485,19 +622,26 @@ def build_digest_preview(
     weekday = ["월", "화", "수", "목", "금", "토", "일"][now.weekday()]
     seed = f"{user.id}:{now.date().isoformat()}:{','.join(topics)}:{','.join(sites)}"
     name = user.display_name or "당신"
-    title = f"오늘의 3 · {now.month}/{now.day} ({weekday})"
+    title = f"하루만장 · {now.month}/{now.day} ({weekday})"
     settings = get_settings()
     trigger_ms = elapsed_ms(trigger_started)
 
     _emit(on_progress, "crawl")
     crawl_started = perf_counter()
-    candidates = personalize_candidates(gather_candidates(topics, preferred_sites=sites), user)
+    raw = shared_candidates if shared_candidates is not None else gather_candidates(topics, preferred_sites=sites)
+    candidates = personalize_candidates(raw, user)
     crawl_ms = elapsed_ms(crawl_started)
 
     layer_ms: dict[str, int] = {"llm_ms": 0, "aggregation_ms": 0, "format_ms": 0}
     _emit(on_progress, "curate")
     llm, skip_reason, llm_raw = _llm_curate(
-        db, user, pref, candidates, timings=layer_ms, on_progress=on_progress
+        db,
+        user,
+        pref,
+        llm_shortlist(candidates, user, topics),
+        timings=layer_ms,
+        on_progress=on_progress,
+        pool=candidates,
     )
     if llm:
         llm_title, llm_body, llm_items = llm
@@ -522,7 +666,10 @@ def build_digest_preview(
     agg_started = perf_counter()
     picked = _heuristic_pick(candidates, seed)
     curator = "heuristic" if picked else "static"
-    items = _attach_insights(picked or _static_fallback(topics, seed), pref=pref, candidates=candidates)
+    items = _attach_why(
+        _attach_insights(picked or _static_fallback(topics, seed), pref=pref, candidates=candidates),
+        candidates,
+    )
     labeled: list[dict[str, str]] = []
     for i, item in enumerate(items):
         row = dict(item)
@@ -570,12 +717,15 @@ def create_digest(
     slot_label: str = "",
     lead_ms: int = 0,
     on_progress: ProgressCb | None = None,
+    shared_candidates: list[SourceItem] | None = None,
 ) -> Digest:
     if pref.timezone != SEOUL:
         pref.timezone = SEOUL
         db.add(pref)
     with peak_sampler() as peak:
-        preview = build_digest_preview(db, user, pref, on_progress=on_progress)
+        preview = build_digest_preview(
+            db, user, pref, on_progress=on_progress, shared_candidates=shared_candidates
+        )
     digest = Digest(
         user_id=user.id,
         title=preview.title,

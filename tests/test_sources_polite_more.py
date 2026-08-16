@@ -225,6 +225,7 @@ def test_sources_html_and_gather(monkeypatch):
     )
     assert "summary=" in block
 
+    monkeypatch.setattr("app.services.sources.destination_is_missing", lambda *_a, **_k: False)
     monkeypatch.setattr("app.services.sources._parse_feed", lambda *a, **k: [])
     monkeypatch.setattr(
         "app.services.sources._html_for_sites",

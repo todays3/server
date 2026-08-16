@@ -13,6 +13,7 @@ from app.auth import hash_password
 from app.db import Base
 from app.models import Digest, Preference, User
 from app.services import scheduler as sch
+from app.services.shared_crawl import clear_shared_crawls
 from app.services.sources import SourceItem
 
 
@@ -52,12 +53,13 @@ async def test_tick_prepares_early_then_sends_at_slot(tmp_path, monkeypatch):
     clock = {"now": today.replace(hour=7, minute=22, second=0, microsecond=0)}
     monkeypatch.setattr(sch, "SessionLocal", TestingSession)
     monkeypatch.setattr(sch, "aware_now", lambda _tz: clock["now"])
-    monkeypatch.setattr(sch, "suggested_lead_minutes_from_db", lambda _db: 8)
+    monkeypatch.setattr(sch, "suggested_lead_seconds_from_db", lambda _db: 480)
     items = [
         SourceItem(kind="아티클", title="A", url="https://a.example", summary="s", source="s"),
         SourceItem(kind="유튜브", title="B", url="https://b.example", summary="s", source="s"),
         SourceItem(kind="커뮤니티", title="C", url="https://c.example", summary="s", source="s"),
     ]
+    monkeypatch.setattr("app.services.shared_crawl.gather_candidates", lambda *a, **k: items)
     monkeypatch.setattr("app.services.digest.gather_candidates", lambda *a, **k: items)
 
     sends: list[int] = []
@@ -70,6 +72,7 @@ async def test_tick_prepares_early_then_sends_at_slot(tmp_path, monkeypatch):
     monkeypatch.setattr("app.services.delivery.send_digest_via_kakao", capture_send)
     sch._sent_slots.clear()
     sch._prepared_slots.clear()
+    clear_shared_crawls()
 
     await sch.tick_morning_digests()
     db = TestingSession()

@@ -16,11 +16,17 @@ from app.services.send_times import format_hm
 LAYER_KEYS = ("trigger", "crawl", "aggregation", "llm", "format", "wait", "send")
 LAYER_COLUMNS = tuple(f"{key}_ms" for key in LAYER_KEYS)
 
-DEFAULT_LEAD_MINUTES = 3
-MIN_LEAD_MINUTES = 1
-MAX_LEAD_MINUTES = 15
-LEAD_PAD_MS = 15_000
+DEFAULT_LEAD_SECONDS = 40
+MIN_LEAD_SECONDS = 20
+MAX_LEAD_SECONDS = 90
+LEAD_PAD_MS = 5_000
+PREP_OUTLIER_MS = 75_000
 SEND_GRACE_MINUTES = 15
+TICK_SECONDS = 20
+
+
+def suggested_lead_minutes_from_seconds(seconds: int) -> int:
+    return max(1, math.ceil(max(0, int(seconds)) / 60))
 
 
 def elapsed_ms(started: float) -> int:
@@ -56,15 +62,19 @@ def total_ms(row: Any) -> int:
     return prep_ms(t) + t["wait_ms"] + t["send_ms"]
 
 
-def suggested_lead_minutes(prep_samples_ms: list[int]) -> int:
-    samples = [n for n in prep_samples_ms if n > 0]
+def suggested_lead_seconds(prep_samples_ms: list[int]) -> int:
+    samples = [n for n in prep_samples_ms if 0 < n <= PREP_OUTLIER_MS]
     if not samples:
-        return DEFAULT_LEAD_MINUTES
-    minutes = math.ceil((percentile(samples, 90) + LEAD_PAD_MS) / 60_000)
-    return max(MIN_LEAD_MINUTES, min(MAX_LEAD_MINUTES, minutes))
+        return DEFAULT_LEAD_SECONDS
+    seconds = math.ceil((percentile(samples, 90) + LEAD_PAD_MS) / 1000)
+    return max(MIN_LEAD_SECONDS, min(MAX_LEAD_SECONDS, seconds))
 
 
-def suggested_lead_minutes_from_db(db: Session) -> int:
+def suggested_lead_minutes(prep_samples_ms: list[int]) -> int:
+    return suggested_lead_minutes_from_seconds(suggested_lead_seconds(prep_samples_ms))
+
+
+def _schedule_prep_samples(db: Session) -> list[int]:
     rows = list(
         db.scalars(
             select(CrawlRun)
@@ -73,20 +83,28 @@ def suggested_lead_minutes_from_db(db: Session) -> int:
             .limit(30)
         ).all()
     )
-    return suggested_lead_minutes([prep_ms(row) for row in rows])
+    return [prep_ms(row) for row in rows]
+
+
+def suggested_lead_seconds_from_db(db: Session) -> int:
+    return suggested_lead_seconds(_schedule_prep_samples(db))
+
+
+def suggested_lead_minutes_from_db(db: Session) -> int:
+    return suggested_lead_minutes_from_seconds(suggested_lead_seconds_from_db(db))
 
 
 def due_actions(
     now: datetime,
     slots: set[tuple[int, int]],
-    lead_minutes: int,
+    lead_seconds: int,
 ) -> list[tuple[str, str]]:
     actions: list[tuple[str, str]] = []
-    lead = max(0, int(lead_minutes))
+    lead = timedelta(seconds=max(0, int(lead_seconds)))
     grace = timedelta(minutes=SEND_GRACE_MINUTES)
     for hour, minute in sorted(slots):
         slot_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        start_dt = slot_dt - timedelta(minutes=lead)
+        start_dt = slot_dt - lead
         label = format_hm(hour, minute)
         if start_dt <= now < slot_dt:
             actions.append((label, "prepare"))

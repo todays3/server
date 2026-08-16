@@ -33,12 +33,38 @@ def test_catalog_ids_match_collectors():
     assert set(catalog_site_ids()) == catalog
 
 
+def test_catalog_includes_design_and_kr_tech_sites():
+    ids = set(all_site_ids())
+    for sid in (
+        "techblogposts",
+        "naver-d2",
+        "design-compass",
+        "uibowl",
+        "surfit",
+        "rocketpunch",
+        "innoforest",
+        "eo-planet",
+        "disquiet",
+        "qiita",
+        "zenn",
+        "producthunt",
+        "behance",
+        "dribbble",
+        "mobbin",
+    ):
+        assert sid in ids
+    labels = {g["id"]: g["label"] for g in catalog_payload()["groups"]}
+    assert "design" in labels
+    assert any("디자인" in g["match"] for g in catalog_payload()["groups"] if g["id"] == "design")
+
+
 def test_catalog_payload_shape():
     payload = catalog_payload()
     assert payload["groups"]
     assert "IT" in payload["mega_map"]
     assert "반도체" in payload["mega_map"]
     assert "의학" in payload["mega_map"]
+    assert "design" in payload["mega_map"]["IT"]
     assert all("sites" in g for g in payload["groups"])
 
 
@@ -63,6 +89,36 @@ def test_html_list_parser_extracts_anchors(monkeypatch):
     assert len(items) == 1
     assert items[0].url == "https://github.com/owner/awesome-repo"
     assert "Awesome" in items[0].title
+
+
+def test_page_is_missing_drops_http_404_and_soft_404_titles():
+    from app.services.sources import page_is_missing
+
+    assert page_is_missing(404, "") is True
+    assert page_is_missing(410, "") is True
+    assert page_is_missing(200, "<html><title>Market wrap</title></html>") is False
+    assert page_is_missing(200, "<html><title>404 Not Found</title><body>gone</body></html>") is True
+    assert page_is_missing(200, "<html><title>페이지를 찾을 수 없습니다</title></html>") is True
+    assert page_is_missing(200, "<html><title>How to handle 404 errors in FastAPI</title></html>") is False
+    assert page_is_missing(403, "") is False
+
+
+def test_gather_candidates_excludes_missing_destinations(monkeypatch):
+    live = SourceItem("아티클", "살아있는 글", "https://live.example/a", "s", "rss")
+    gone = SourceItem("아티클", "죽은 글", "https://gone.example/a", "s", "rss")
+    video = SourceItem("유튜브", "영상", "https://www.youtube.com/watch?v=abc", "s", "yt")
+    monkeypatch.setattr("app.services.youtube.collect_youtube_items", lambda *a, **k: [video])
+    monkeypatch.setattr("app.services.sources._parse_feed", lambda *a, **k: [gone, live])
+    monkeypatch.setattr("app.services.sources._html_for_sites", lambda *a, **k: [])
+    monkeypatch.setattr(
+        "app.services.sources.destination_is_missing",
+        lambda url: "gone.example" in url,
+    )
+    got = gather_candidates(["경제"], preferred_sites=["naver-finance"], max_items=10)
+    urls = [item.url for item in got]
+    assert "https://gone.example/a" not in urls
+    assert "https://live.example/a" in urls
+    assert "https://www.youtube.com/watch?v=abc" in urls
 
 
 def test_youtube_rss_keeps_only_videos_over_10k_views():

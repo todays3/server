@@ -166,6 +166,7 @@ class DigestItemOut(BaseModel):
     topic: str = ""
     insight_q: str = ""
     insight_url: str = ""
+    why: str = ""
 
 
 class DigestOut(BaseModel):
@@ -192,12 +193,14 @@ class AdminDigestPreviewRequest(BaseModel):
 
 class AdminKakaoTestSendRequest(BaseModel):
     user_id: int
-    title: str = Field(default="오늘의 3 · 전송 테스트", min_length=1, max_length=80)
+    title: str = Field(default="하루만장 · 전송 테스트", min_length=1, max_length=80)
     body: str = Field(
         default="크롤링과 AI를 건너뛴 전송 테스트입니다.\n이 메시지가 보이면 나에게 보내기 연결이 정상입니다.",
         min_length=1,
         max_length=900,
     )
+    send_kakao: bool = True
+    send_push: bool = False
 
 
 class AdminKakaoTestSendOut(BaseModel):
@@ -206,6 +209,10 @@ class AdminKakaoTestSendOut(BaseModel):
     display_name: str
     kakao_connected: bool
     error_message: str = ""
+    kakao_ok: bool = False
+    push_devices: int = 0
+    push_sent: int = 0
+    push_error: str = ""
 
 
 class DigestCandidateOut(BaseModel):
@@ -214,6 +221,7 @@ class DigestCandidateOut(BaseModel):
     url: str
     summary: str = ""
     source: str = ""
+    why: str = ""
 
 
 class AdminDigestPreviewOut(BaseModel):
@@ -237,6 +245,7 @@ class KakaoStatusOut(BaseModel):
     configured: bool
     connected: bool
     kakao_id: str | None = None
+    talk_message: bool = False
 
 
 class KakaoConnectOut(BaseModel):
@@ -256,6 +265,7 @@ class HealthOut(BaseModel):
     llm_provider: str
     sources: str
     scheduler: str
+    firebase_configured: bool = False
 
 
 class NotificationHookIn(BaseModel):
@@ -457,8 +467,24 @@ class LatencyRunOut(BaseModel):
     rss_delta_bytes: int = 0
 
 
+class StickyNoteIn(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    body: str = Field(min_length=1, max_length=400)
+
+
+class StickyNoteOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    nickname: str
+    body: str
+    created_at: datetime
+
+
 class LatencyListOut(BaseModel):
     lead_minutes: int
+    lead_seconds: int = 40
     sample_size: int
     layers: list[LatencyLayerOut]
     runs: list[LatencyRunOut]

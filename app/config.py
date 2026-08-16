@@ -23,7 +23,7 @@ def env_file_paths() -> tuple[str, ...]:
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file_encoding="utf-8", extra="ignore")
 
-    app_name: str = "오늘의 3"
+    app_name: str = "하루만장"
     api_version: str = "v1"
     secret_key: str = "dev-secret-change-me"
     database_url: str = "sqlite:///./tome.db"
@@ -58,8 +58,20 @@ class Settings(BaseSettings):
     rate_limit_auth_window_seconds: float = 60.0
     rate_limit_hooks_max: int = 60
     rate_limit_hooks_window_seconds: float = 60.0
+    rate_limit_notes_max: int = 8
+    rate_limit_notes_window_seconds: float = 60.0
 
     youtube_api_key: str = ""
+
+    # Firebase Cloud Messaging (HTTP v1). Empty → skip push, Kakao still sends.
+    firebase_project_id: str = ""
+    firebase_client_email: str = ""
+    firebase_private_key: str = ""
+    firebase_web_api_key: str = ""
+    firebase_web_app_id: str = ""
+    firebase_web_messaging_sender_id: str = ""
+    firebase_web_vapid_key: str = ""
+    firebase_web_auth_domain: str = ""
 
     # Android Tasker/MacroDroid → POST /api/v1/hooks/notifications
     # Empty secret disables the endpoint (503).
@@ -101,6 +113,32 @@ class Settings(BaseSettings):
     @property
     def youtube_configured(self) -> bool:
         return bool(self.youtube_api_key)
+
+    @property
+    def firebase_send_configured(self) -> bool:
+        return bool(self.firebase_project_id and self.firebase_client_email and self.firebase_private_key)
+
+    @property
+    def firebase_web_configured(self) -> bool:
+        return bool(
+            self.firebase_project_id
+            and self.firebase_web_api_key
+            and self.firebase_web_app_id
+            and self.firebase_web_messaging_sender_id
+            and self.firebase_web_vapid_key
+        )
+
+    @property
+    def firebase_private_key_pem(self) -> str:
+        return (self.firebase_private_key or "").replace("\\n", "\n")
+
+    @property
+    def firebase_auth_domain(self) -> str:
+        if self.firebase_web_auth_domain:
+            return self.firebase_web_auth_domain
+        if self.firebase_project_id:
+            return f"{self.firebase_project_id}.firebaseapp.com"
+        return ""
 
     @property
     def flash_webhook_configured(self) -> bool:

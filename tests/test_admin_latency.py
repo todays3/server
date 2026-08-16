@@ -85,6 +85,8 @@ async def test_list_latency(client: AsyncClient, db_session):
     assert res.status_code == 200
     body = res.json()
     assert body["lead_minutes"] >= 1
+    assert body["lead_seconds"] <= 90
+    assert body["lead_seconds"] >= 20
     ids = [layer["id"] for layer in body["layers"]]
     assert ids == ["trigger", "crawl", "aggregation", "llm", "format", "wait", "send"]
     row = body["runs"][0]

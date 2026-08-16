@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import SessionLocal, engine, apply_sqlite_pragmas
-from app.models import CrawlRun, Digest, KakaoAccount, LlmUsage, Preference, User
+from app.models import CrawlRun, Digest, KakaoAccount, LlmUsage, Preference, PushDevice, StickyNote, User
 
 
 def ensure_schema() -> None:
@@ -104,6 +104,8 @@ def _delete_user_by_email(db: Session, email: str) -> None:
     if user is None:
         return
     uid = user.id
+    db.query(StickyNote).filter(StickyNote.user_id == uid).delete()
+    db.query(PushDevice).filter(PushDevice.user_id == uid).delete()
     db.query(CrawlRun).filter(CrawlRun.user_id == uid).delete()
     db.query(LlmUsage).filter(LlmUsage.user_id == uid).delete()
     db.query(Digest).filter(Digest.user_id == uid).delete()

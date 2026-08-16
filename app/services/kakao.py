@@ -24,6 +24,7 @@ from app.services.nicknames import random_nickname
 AUTH_URL = "https://kauth.kakao.com/oauth/authorize"
 TOKEN_URL = "https://kauth.kakao.com/oauth/token"
 ME_URL = "https://kapi.kakao.com/v2/user/me"
+SCOPES_URL = "https://kapi.kakao.com/v2/user/scopes"
 MEMO_URL = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
 
 # Optional extra scopes for 나에게 보내기 after login. Login itself omits scope
@@ -101,6 +102,28 @@ async def fetch_kakao_profile(access_token: str) -> dict:
         if resp.status_code >= 400:
             raise RuntimeError(str(payload.get("msg") or payload.get("error_description") or resp.text))
         return payload
+
+
+def talk_message_from_scopes(payload: dict) -> bool:
+    for row in payload.get("scopes") or []:
+        if isinstance(row, dict) and row.get("id") == MEMO_SCOPES:
+            return bool(row.get("agreed"))
+    return False
+
+
+async def fetch_talk_message_agreed(access_token: str) -> bool:
+    if not access_token:
+        return False
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            SCOPES_URL,
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"scopes": MEMO_SCOPES},
+        )
+        payload = resp.json() if resp.content else {}
+        if resp.status_code >= 400:
+            return False
+        return talk_message_from_scopes(payload if isinstance(payload, dict) else {})
 
 
 def parse_profile(profile: dict) -> tuple[str, str, str | None]:
@@ -328,7 +351,7 @@ async def _post_memo(access_token: str, text: str) -> dict:
             "web_url": "https://localhost",
             "mobile_web_url": "https://localhost",
         },
-        "button_title": "오늘의 3",
+        "button_title": "하루만장",
     }
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.post(

@@ -155,7 +155,7 @@ _GROUPS: list[tuple[str, str, list[str], list[tuple[str, str, str, str]]]] = [
     (
         "it",
         "IT · 개발",
-        ["IT", "개발", "AI", "프론트", "백엔드", "제품"],
+        ["IT", "개발", "AI", "프론트", "백엔드", "제품", "디자인", "데이터"],
         [
             (
                 "hn",
@@ -198,6 +198,36 @@ _GROUPS: list[tuple[str, str, list[str], list[tuple[str, str, str, str]]]] = [
                 "OKKY",
                 "한국 개발자 커뮤니티. 구인·구직, 기술 Q&A, 생활·커리어 글을 나누는 국내 IT 포럼입니다.",
                 "https://okky.kr/",
+            ),
+            (
+                "techblogposts",
+                "TechBlogPosts",
+                "국내 기업·팀 기술 블로그를 한곳에 모아 보여주는 애그리게이터입니다.",
+                "https://techblogposts.com/",
+            ),
+            (
+                "naver-d2",
+                "NAVER D2",
+                "네이버 개발자 기술 블로그. 검색·프론트·인프라·AI 실전기가 올라옵니다.",
+                "https://d2.naver.com/",
+            ),
+            (
+                "qiita",
+                "Qiita",
+                "일본 개발자 지식 공유 플랫폼. 언어·프레임워크 실무 글이 많습니다.",
+                "https://qiita.com/",
+            ),
+            (
+                "zenn",
+                "Zenn",
+                "엔지니어가 기술 글·책을 발행하는 일본 테크 퍼블리싱 플랫폼입니다.",
+                "https://zenn.dev/",
+            ),
+            (
+                "producthunt",
+                "Product Hunt",
+                "새로 나온 프로덕트·툴을 매일 소개하고 투표하는 런칭 커뮤니티입니다.",
+                "https://www.producthunt.com/",
             ),
         ],
     ),
@@ -279,6 +309,67 @@ _GROUPS: list[tuple[str, str, list[str], list[tuple[str, str, str, str]]]] = [
                 "비즈니스·테크·콘텐츠 트렌드를 다루는 국내 미디어. 실무형 인사이트 아티클이 많습니다.",
                 "https://outstanding.kr/",
             ),
+            (
+                "innoforest",
+                "혁신의 숲",
+                "국내 스타트업 투자·성장 데이터를 모아 보는 스타트업 인텔리전스 플랫폼입니다.",
+                "https://www.innoforest.co.kr/",
+            ),
+            (
+                "eo-planet",
+                "EO 플래닛",
+                "스타트업·창업가 인터뷰와 비즈니스 스토리를 전하는 EO 미디어입니다.",
+                "https://www.eopla.net/",
+            ),
+            (
+                "disquiet",
+                "디스콰이엇",
+                "국내 메이커가 제품을 올리고 피드백을 주고받는 프로덕트 커뮤니티입니다.",
+                "https://disquiet.io/",
+            ),
+        ],
+    ),
+    (
+        "design",
+        "디자인 · UX",
+        ["디자인", "UX", "UI", "프로덕트", "프론트엔드", "브랜딩"],
+        [
+            (
+                "design-compass",
+                "Design Compass",
+                "국내 디자인·브랜딩·트렌드 뉴스와 아티클을 모으는 디자인 미디어입니다.",
+                "https://www.designcompass.org/",
+            ),
+            (
+                "uibowl",
+                "UIBowl",
+                "실제 서비스 UI 패턴과 화면 레퍼런스를 모아 보는 갤러리입니다.",
+                "https://www.uibowl.com/",
+            ),
+            (
+                "surfit",
+                "Surfit",
+                "디자인·기획·개발 실무 콘텐츠를 큐레이션하는 국내 커리어 미디어입니다.",
+                "https://www.surfit.io/",
+            ),
+            (
+                "behance",
+                "Behance",
+                "전 세계 디자이너 포트폴리오와 프로젝트 쇼케이스가 모이는 Adobe 커뮤니티입니다.",
+                "https://www.behance.net/",
+            ),
+            (
+                "dribbble",
+                "Dribbble",
+                "UI·브랜딩·일러스트 샷이 올라오는 디자이너 커뮤니티입니다.",
+                "https://dribbble.com/",
+            ),
+            (
+                "mobbin",
+                "Mobbin",
+                "모바일 앱 화면을 플로우 단위로 모아 둔 UI 레퍼런스 라이브러리입니다.",
+                "https://mobbin.com/",
+            ),
         ],
     ),
     (
@@ -312,6 +403,12 @@ _GROUPS: list[tuple[str, str, list[str], list[tuple[str, str, str, str]]]] = [
                 "https://www.wanted.co.kr/",
             ),
             (
+                "rocketpunch",
+                "RocketPunch",
+                "스타트업·IT 채용과 회사 정보를 다루는 국내 커리어 플랫폼입니다.",
+                "https://www.rocketpunch.com/",
+            ),
+            (
                 "naver-news",
                 "네이버 뉴스",
                 "정치·경제·사회·세계 등 국내 종합 뉴스를 언론사별로 모아 보여주는 네이버 뉴스 홈입니다.",
@@ -322,7 +419,7 @@ _GROUPS: list[tuple[str, str, list[str], list[tuple[str, str, str, str]]]] = [
 ]
 
 MEGA_TO_GROUPS: dict[str, list[str]] = {
-    "IT": ["it", "arch", "kr-it"],
+    "IT": ["it", "arch", "kr-it", "design"],
     "경제": ["stock-kr", "stock-us", "crypto", "quant"],
     "연애": ["life"],
     "라이프": ["life"],

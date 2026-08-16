@@ -252,6 +252,7 @@ async def test_kakao_status_connect_disconnect(client: AsyncClient, db_session, 
     status = await client.get("/api/v1/kakao/status", headers=headers)
     assert status.status_code == 200
     assert status.json()["connected"] is False
+    assert status.json()["talk_message"] is False
 
     monkeypatch.setenv("KAKAO_REST_API_KEY", "")
     get_settings.cache_clear()
@@ -278,6 +279,15 @@ async def test_kakao_status_connect_disconnect(client: AsyncClient, db_session, 
     )
     db_session.commit()
     db_session.refresh(member)
+
+    async def agreed(_token: str) -> bool:
+        return True
+
+    monkeypatch.setattr("app.routers.kakao.kakao_service.fetch_talk_message_agreed", agreed)
+    scoped = await client.get("/api/v1/kakao/status", headers=headers)
+    assert scoped.json()["connected"] is True
+    assert scoped.json()["talk_message"] is True
+
     deleted = await client.delete("/api/v1/kakao/disconnect", headers=headers)
     assert deleted.status_code == 200
 

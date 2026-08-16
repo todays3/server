@@ -14,11 +14,13 @@ from app.services.kakao import (
     build_authorize_url,
     exchange_code,
     fetch_kakao_profile,
+    fetch_talk_message_agreed,
     parse_profile,
     refresh_access_token,
     send_digest_via_kakao,
     send_memo_to_me,
     split_memo_chunks,
+    talk_message_from_scopes,
 )
 
 
@@ -70,6 +72,28 @@ def test_build_authorize_url_requires_key_and_prompt(monkeypatch):
         assert "account_email" not in memo
     finally:
         get_settings.cache_clear()
+
+
+def test_talk_message_from_scopes_reads_agreed_flag():
+    assert talk_message_from_scopes({"scopes": [{"id": "talk_message", "agreed": True}]}) is True
+    assert talk_message_from_scopes({"scopes": [{"id": "talk_message", "agreed": False}]}) is False
+    assert talk_message_from_scopes({"scopes": [{"id": "account_email", "agreed": True}]}) is False
+    assert talk_message_from_scopes({}) is False
+
+
+@pytest.mark.asyncio
+async def test_fetch_talk_message_agreed_reads_kakao_scopes(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.kakao.httpx.AsyncClient",
+        lambda **_k: _AsyncClient(_Resp(200, {"scopes": [{"id": "talk_message", "agreed": True}]})),
+    )
+    assert await fetch_talk_message_agreed("tok") is True
+    monkeypatch.setattr(
+        "app.services.kakao.httpx.AsyncClient",
+        lambda **_k: _AsyncClient(_Resp(403, {"msg": "denied"})),
+    )
+    assert await fetch_talk_message_agreed("tok") is False
+    assert await fetch_talk_message_agreed("") is False
 
 
 @pytest.mark.asyncio

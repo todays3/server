@@ -39,11 +39,13 @@ from app.services.crawl_log import persist_crawl_run
 from app.services.digest import build_digest_preview
 from app.services.run_resources import peak_sampler
 from app.services.kakao import send_digest_via_kakao
+from app.services.fcm import device_count, fcm_send_configured, notify_digest_sent
 from app.services.pipeline_timing import (
     LAYER_KEYS,
     percentile,
     prep_ms,
     suggested_lead_minutes_from_db,
+    suggested_lead_seconds_from_db,
     timings_from,
     total_ms,
 )
@@ -515,6 +517,7 @@ def preview_digest_for_user(
                 topic=str(item.get("topic") or item.get("hint") or ""),
                 insight_q=str(item.get("insight_q") or ""),
                 insight_url=str(item.get("insight_url") or ""),
+                why=str(item.get("why") or ""),
             )
             for item in preview.items
         ],
@@ -525,6 +528,7 @@ def preview_digest_for_user(
                 url=c.url,
                 summary=c.summary,
                 source=c.source,
+                why=c.pick_reason,
             )
             for c in preview.candidates
         ],
@@ -545,21 +549,48 @@ async def kakao_test_send(
     if user is None:
         raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다")
     connected = user.kakao is not None and bool(user.kakao.access_token)
-    if not connected:
-        return AdminKakaoTestSendOut(
-            ok=False,
-            user_id=user.id,
-            display_name=user.display_name,
-            kakao_connected=False,
-            error_message="카카오 나에게 보내기가 연결되지 않았습니다",
-        )
-    ok, err = await send_digest_via_kakao(user, payload.title, payload.body, db=db)
+    kakao_ok = False
+    kakao_error = ""
+    if payload.send_kakao:
+        if not connected:
+            kakao_error = "카카오 나에게 보내기가 연결되지 않았습니다"
+        else:
+            kakao_ok, kakao_error = await send_digest_via_kakao(user, payload.title, payload.body, db=db)
+            db.commit()
+
+    push_devices = device_count(db, user.id)
+    push_sent = 0
+    push_error = ""
+    if payload.send_push:
+        if not fcm_send_configured():
+            push_error = "Firebase 전송이 설정되지 않았습니다"
+        elif push_devices < 1:
+            push_error = "등록된 푸시 기기가 없습니다"
+        else:
+            push_sent = notify_digest_sent(db, user.id, payload.title, payload.body)
+            db.commit()
+            if push_sent < 1:
+                push_error = "푸시를 보내지 못했습니다"
+
+    errors: list[str] = []
+    if payload.send_kakao and not kakao_ok:
+        errors.append(kakao_error or "카카오 전송 실패")
+    if payload.send_push and push_sent < 1:
+        errors.append(push_error or "푸시 전송 실패")
+    if not payload.send_kakao and not payload.send_push:
+        errors.append("카카오 또는 푸시를 고르세요")
+
+    ok = not errors
     return AdminKakaoTestSendOut(
         ok=ok,
         user_id=user.id,
         display_name=user.display_name,
-        kakao_connected=True,
-        error_message=err,
+        kakao_connected=connected,
+        error_message="; ".join(errors),
+        kakao_ok=kakao_ok,
+        push_devices=push_devices,
+        push_sent=push_sent,
+        push_error=push_error,
     )
 
 
@@ -647,6 +678,7 @@ def list_latency(
         for row in rows
         if row.trigger == "schedule" and prep_ms(row) > 0
     ]
+    lead_seconds = suggested_lead_seconds_from_db(db)
     lead_minutes = suggested_lead_minutes_from_db(db)
     layers_out: list[LatencyLayerOut] = []
     for key in LAYER_KEYS:
@@ -692,6 +724,7 @@ def list_latency(
         )
     return LatencyListOut(
         lead_minutes=lead_minutes,
+        lead_seconds=lead_seconds,
         sample_size=len(schedule_preps),
         layers=layers_out,
         runs=runs,

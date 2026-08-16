@@ -33,13 +33,17 @@ def connect_kakao(user: Annotated[User, Depends(get_current_user)]) -> KakaoConn
 
 
 @router.get("/status", response_model=KakaoStatusOut)
-def kakao_status(user: Annotated[User, Depends(get_current_user)]) -> KakaoStatusOut:
+async def kakao_status(user: Annotated[User, Depends(get_current_user)]) -> KakaoStatusOut:
     settings = get_settings()
     connected = user.kakao is not None and bool(user.kakao.access_token)
+    talk_message = False
+    if connected and user.kakao and user.kakao.access_token:
+        talk_message = await kakao_service.fetch_talk_message_agreed(user.kakao.access_token)
     return KakaoStatusOut(
         configured=settings.kakao_configured,
         connected=connected,
         kakao_id=user.kakao.kakao_id if connected and user.kakao else None,
+        talk_message=talk_message,
     )
 
 

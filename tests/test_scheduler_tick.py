@@ -13,6 +13,7 @@ from app.auth import hash_password
 from app.db import Base
 from app.models import Digest, Preference, User
 from app.services import scheduler as sch
+from app.services.shared_crawl import clear_shared_crawls
 from app.services.sources import SourceItem
 
 
@@ -107,12 +108,14 @@ async def test_tick_morning_digests_skips_then_sends(tmp_path, monkeypatch):
     db.close()
     sch._sent_slots.clear()
     sch._prepared_slots.clear()
+    clear_shared_crawls()
 
     items = [
         SourceItem(kind="아티클", title="A", url="https://a.example", summary="s", source="s"),
         SourceItem(kind="유튜브", title="B", url="https://b.example", summary="s", source="s"),
         SourceItem(kind="커뮤니티", title="C", url="https://c.example", summary="s", source="s"),
     ]
+    monkeypatch.setattr("app.services.shared_crawl.gather_candidates", lambda *a, **k: items)
     monkeypatch.setattr("app.services.digest.gather_candidates", lambda *a, **k: items)
 
     async def send_ok(*_a, **_k):

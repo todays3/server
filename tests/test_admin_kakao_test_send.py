@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
 from app.auth import create_access_token, hash_password
-from app.models import Digest, KakaoAccount, Preference, User
+from app.models import Digest, KakaoAccount, Preference, PushDevice, User
 
 
 @pytest.fixture()
@@ -126,3 +126,52 @@ async def test_kakao_test_send_without_kakao(client: AsyncClient, db_session, mo
     assert body["ok"] is False
     assert body["kakao_connected"] is False
     assert "연결" in body["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_notify_test_send_push_without_kakao(client: AsyncClient, db_session, monkeypatch):
+    sent: list[tuple[str, str, str]] = []
+
+    def fake_notify(db, user_id, title, body, send_one=None):
+        _ = (db, send_one)
+        sent.append((str(user_id), title, body))
+        return 1
+
+    monkeypatch.setattr("app.routers.admin.fcm_send_configured", lambda: True)
+    monkeypatch.setattr("app.routers.admin.notify_digest_sent", fake_notify)
+
+    async def boom_kakao(*_a, **_k):
+        raise AssertionError("kakao")
+
+    monkeypatch.setattr("app.routers.admin.send_digest_via_kakao", boom_kakao)
+
+    admin = db_session.query(User).filter_by(email="admin@example.com").one()
+    db_session.add(PushDevice(user_id=admin.id, token="web-token", device_id="desk", platform="web"))
+    db_session.commit()
+
+    res = await client.post(
+        "/api/v1/admin/kakao/test-send",
+        headers=_header(admin),
+        json={"user_id": admin.id, "title": "푸시 제목", "body": "푸시 본문", "send_kakao": False, "send_push": True},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is True
+    assert body["kakao_ok"] is False
+    assert body["push_sent"] == 1
+    assert sent == [(str(admin.id), "푸시 제목", "푸시 본문")]
+
+
+@pytest.mark.asyncio
+async def test_notify_test_send_push_without_devices(client: AsyncClient, db_session, monkeypatch):
+    monkeypatch.setattr("app.routers.admin.fcm_send_configured", lambda: True)
+    admin = db_session.query(User).filter_by(email="admin@example.com").one()
+    res = await client.post(
+        "/api/v1/admin/kakao/test-send",
+        headers=_header(admin),
+        json={"user_id": admin.id, "send_kakao": False, "send_push": True},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is False
+    assert "기기" in body["error_message"]

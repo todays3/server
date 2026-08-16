@@ -9,11 +9,13 @@ per-host throttled and respect robots.txt.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html.parser import HTMLParser
 from urllib.parse import quote_plus, urljoin, urlparse
 
 import feedparser
+
+from app.services.curate_limits import GATHER_FETCH_CAP, GATHER_MAX_ITEMS
 
 
 @dataclass
@@ -23,6 +25,8 @@ class SourceItem:
     url: str
     summary: str
     source: str
+    site_id: str = ""
+    pick_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -52,6 +56,8 @@ _RSS_CATALOG: list[tuple[str, str, str, str]] = [
     ("아티클", "Google News US markets", "미국증시", "https://news.google.com/rss/search?q=US+stock+market&hl=en-US&gl=US&ceid=US:en"),
     ("아티클", "Google News 반도체", "반도체", "https://news.google.com/rss/search?q=%EB%B0%98%EB%8F%84%EC%B2%B4&hl=ko&gl=KR&ceid=KR:ko"),
     ("아티클", "Google News AI", "AI", "https://news.google.com/rss/search?q=artificial+intelligence&hl=en-US&gl=US&ceid=US:en"),
+    ("아티클", "Google News 디자인", "디자인", "https://news.google.com/rss/search?q=%EB%94%94%EC%9E%90%EC%9D%B8+UX+UI&hl=ko&gl=KR&ceid=KR:ko"),
+    ("아티클", "Google News UX", "UX", "https://news.google.com/rss/search?q=UX+design&hl=en-US&gl=US&ceid=US:en"),
     ("아티클", "Google News 연애", "연애", "https://news.google.com/rss/search?q=%EC%97%B0%EC%95%A0&hl=ko&gl=KR&ceid=KR:ko"),
     ("아티클", "Google News 커리어", "커리어", "https://news.google.com/rss/search?q=%EC%9D%B4%EC%A7%81+%EB%A9%B4%EC%A0%91&hl=ko&gl=KR&ceid=KR:ko"),
     ("커뮤니티", "HN Frontpage", "IT", "https://hnrss.org/frontpage"),
@@ -291,6 +297,70 @@ def _parse_html_list(spec: HtmlListSpec, *, query: str = "", body: str | None = 
     return items
 
 
+_HTML_TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
+_GONE_STATUSES = frozenset({404, 410})
+_GONE_TITLE_NEEDLES = (
+    "page not found",
+    "페이지를 찾을 수 없",
+    "존재하지 않는 페이지",
+    "존재하지 않는 게시",
+    "글을 찾을 수 없",
+    "게시물이 없",
+    "요청하신 페이지를 찾을 수",
+)
+
+
+def _html_title(body: str) -> str:
+    match = _HTML_TITLE.search(body or "")
+    if not match:
+        return ""
+    return re.sub(r"\s+", " ", match.group(1)).strip()
+
+
+def page_is_missing(status: int | None, body: str) -> bool:
+    """True when the destination is a hard or soft 404 page."""
+    if status in _GONE_STATUSES:
+        return True
+    title = _html_title(body)
+    if not title:
+        return False
+    compact = title.lower()
+    if re.fullmatch(r"404(\s*[-–|:·]\s*.{0,40})?", compact):
+        return True
+    if compact.startswith("404") and "found" in compact and len(title) < 48:
+        return True
+    return len(title) < 80 and any(needle in compact for needle in _GONE_TITLE_NEEDLES)
+
+
+def _skip_destination_check(url: str) -> bool:
+    host = urlparse(url).netloc.lower()
+    return "youtube.com" in host or "youtu.be" in host
+
+
+def destination_is_missing(url: str) -> bool:
+    if not url or _skip_destination_check(url):
+        return False
+    fetched = _fetch(url, timeout=8.0)
+    return page_is_missing(fetched.status_code, fetched.body)
+
+
+def keep_reachable_items(items: list[SourceItem]) -> list[SourceItem]:
+    if not items:
+        return []
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    keep: dict[int, bool] = {}
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = {pool.submit(destination_is_missing, item.url): index for index, item in enumerate(items)}
+        for future in as_completed(futures):
+            index = futures[future]
+            try:
+                keep[index] = not future.result()
+            except Exception:  # noqa: BLE001 — network blips keep the candidate
+                keep[index] = True
+    return [item for index, item in enumerate(items) if keep.get(index, True)]
+
+
 # User-selected reference site id → RSS/Atom feeds
 _SITE_FEEDS: dict[str, list[tuple[str, str, str]]] = {
     "naver-finance": [
@@ -431,6 +501,57 @@ _SITE_FEEDS: dict[str, list[tuple[str, str, str]]] = {
     "okky": [
         ("커뮤니티", "OKKY 이슈", "https://news.google.com/rss/search?q=OKKY+%EA%B0%9C%EB%B0%9C&hl=ko&gl=KR&ceid=KR:ko"),
     ],
+    "techblogposts": [
+        ("아티클", "TechBlogPosts", "https://news.google.com/rss/search?q=site:techblogposts.com&hl=ko&gl=KR&ceid=KR:ko"),
+        ("아티클", "한국 기술블로그", "https://news.google.com/rss/search?q=%EA%B8%B0%EC%88%A0+%EB%B8%94%EB%A1%9C%EA%B7%B8+%EA%B0%9C%EB%B0%9C&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "naver-d2": [
+        ("아티클", "NAVER D2", "https://d2.naver.com/d2.atom"),
+        ("아티클", "NAVER D2 Google", "https://news.google.com/rss/search?q=site:d2.naver.com&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "qiita": [
+        ("아티클", "Qiita popular", "https://qiita.com/popular-items/feed"),
+        ("아티클", "Qiita Google", "https://news.google.com/rss/search?q=site:qiita.com&hl=ja&gl=JP&ceid=JP:ja"),
+    ],
+    "zenn": [
+        ("아티클", "Zenn", "https://zenn.dev/feed"),
+        ("아티클", "Zenn Google", "https://news.google.com/rss/search?q=site:zenn.dev&hl=ja&gl=JP&ceid=JP:ja"),
+    ],
+    "producthunt": [
+        ("아티클", "Product Hunt", "https://www.producthunt.com/feed"),
+        ("아티클", "Product Hunt Google", "https://news.google.com/rss/search?q=site:producthunt.com&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "innoforest": [
+        ("아티클", "혁신의 숲", "https://news.google.com/rss/search?q=site:innoforest.co.kr+OR+%ED%98%81%EC%8B%A0%EC%9D%98+%EC%88%B2&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "eo-planet": [
+        ("아티클", "EO 플래닛", "https://news.google.com/rss/search?q=site:eopla.net+OR+EO+%ED%94%8C%EB%9E%98%EB%8B%9B&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "disquiet": [
+        ("커뮤니티", "디스콰이엇", "https://news.google.com/rss/search?q=site:disquiet.io+OR+%EB%94%94%EC%8A%A4%EC%BD%B0%EC%9D%B4%EC%97%87&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "design-compass": [
+        ("아티클", "Design Compass", "https://www.designcompass.org/feed/"),
+        ("아티클", "Design Compass Google", "https://news.google.com/rss/search?q=site:designcompass.org&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "uibowl": [
+        ("아티클", "UIBowl", "https://news.google.com/rss/search?q=site:uibowl.com+OR+UIBowl&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "surfit": [
+        ("아티클", "Surfit", "https://news.google.com/rss/search?q=site:surfit.io&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "behance": [
+        ("아티클", "Behance", "https://news.google.com/rss/search?q=site:behance.net+design&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "dribbble": [
+        ("아티클", "Dribbble", "https://news.google.com/rss/search?q=site:dribbble.com+UI+design&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "mobbin": [
+        ("아티클", "Mobbin", "https://news.google.com/rss/search?q=site:mobbin.com+OR+Mobbin+UI&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "rocketpunch": [
+        ("아티클", "RocketPunch", "https://news.google.com/rss/search?q=site:rocketpunch.com+OR+%EB%A1%9C%EC%BC%93%ED%8E%80%EC%B9%98&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
     "youtube-life": [
         ("유튜브", "지식인사이드", "https://www.youtube.com/feeds/videos.xml?channel_id=UCGX5sP4ehPfCPU1yGT1JT3w"),
         ("유튜브", "슈카월드", "https://www.youtube.com/feeds/videos.xml?channel_id=UCsJ6RuBiTVWRX1041hfhWYA"),
@@ -563,7 +684,7 @@ def _html_for_sites(site_ids: list[str], topics: list[str]) -> list[SourceItem]:
                 if item.url in seen:
                     continue
                 seen.add(item.url)
-                collected.append(item)
+                collected.append(replace(item, site_id=sid))
     return collected
 
 
@@ -586,11 +707,28 @@ def catalog_site_ids() -> list[str]:
     return sorted(all_site_ids())
 
 
+def _site_id_for_feed_url(feed_url: str) -> str:
+    for sid, feeds in _SITE_FEEDS.items():
+        for _kind, _name, url in feeds:
+            if url == feed_url:
+                return sid
+    return ""
+
+
+def overcollect_cap(max_items: int) -> int:
+    """Fetch extra so 404 drops can still leave max_items."""
+    return min(max(max_items * 2, max_items), GATHER_FETCH_CAP)
+
+
+def per_source_limit(max_items: int) -> int:
+    return max(8, min(24, max(max_items // 5, 8)))
+
+
 def gather_candidates(
     topics: list[str],
     *,
     preferred_sites: list[str] | None = None,
-    max_items: int = 24,
+    max_items: int = GATHER_MAX_ITEMS,
 ) -> list[SourceItem]:
     """Fetch RSS + YouTube (Data API, then RSS) + optional public HTML lists."""
     from app.services.youtube import collect_youtube_items
@@ -602,47 +740,49 @@ def gather_candidates(
     feeds = site_feeds + [f for f in topic_feeds if f not in site_feeds]
     collected: list[SourceItem] = []
     seen: set[str] = set()
+    cap = overcollect_cap(max_items)
+    feed_limit = per_source_limit(max_items)
+    yt_limit = max(4, min(12, max(max_items // 10, 4)))
 
-    for item in collect_youtube_items(topics, sites, limit_per=4):
+    site_feed_urls = {url for _k, _n, url in site_feeds}
+
+    def add(item: SourceItem) -> bool:
         if item.url in seen:
-            continue
+            return len(collected) >= cap
         seen.add(item.url)
         collected.append(item)
-        if len(collected) >= max_items:
-            return collected
+        return len(collected) >= cap
+
+    for item in collect_youtube_items(topics, sites, limit_per=yt_limit):
+        if add(item):
+            break
 
     yt_got = {item.source for item in collected if item.kind == "유튜브"}
-    for kind, source, url in feeds:
-        for item in _parse_feed(kind, source, url, limit=4):
-            if item.url in seen:
-                continue
-            seen.add(item.url)
-            collected.append(item)
-            if len(collected) >= max_items:
-                return collected
+    if len(collected) < cap:
+        for kind, source, url in feeds:
+            sid = _site_id_for_feed_url(url) if url in site_feed_urls else ""
+            for item in _parse_feed(kind, source, url, limit=feed_limit):
+                if add(replace(item, site_id=sid)):
+                    break
+            if len(collected) >= cap:
+                break
 
-    for kind, source, url in yt_rss:
-        if source in yt_got:
-            continue
-        for item in _parse_feed(kind, source, url, limit=4):
-            if item.url in seen:
+    if len(collected) < cap:
+        for kind, source, url in yt_rss:
+            if source in yt_got:
                 continue
-            seen.add(item.url)
-            collected.append(item)
-            if len(collected) >= max_items:
-                return collected
+            for item in _parse_feed(kind, source, url, limit=feed_limit):
+                if add(item):
+                    break
+            if len(collected) >= cap:
+                break
 
-    # HTML fallback / supplement for sites that need list/search pages
-    if sites:
+    if sites and len(collected) < cap:
         for item in _html_for_sites(sites, topics):
-            if item.url in seen:
-                continue
-            seen.add(item.url)
-            collected.append(item)
-            if len(collected) >= max_items:
-                return collected
+            if add(item):
+                break
 
-    return collected
+    return keep_reachable_items(collected)[:max_items]
 
 
 def candidates_as_prompt_block(items: list[SourceItem]) -> str:
@@ -653,4 +793,6 @@ def candidates_as_prompt_block(items: list[SourceItem]) -> str:
         lines.append(f"   url={it.url}")
         if it.summary:
             lines.append(f"   summary={it.summary}")
+        if it.pick_reason:
+            lines.append(f"   why={it.pick_reason}")
     return "\n".join(lines)

@@ -10,11 +10,11 @@ from app.auth import hash_password
 from app.config import get_settings
 from app.models import Preference, User
 from app.services.digest import (
-    _format_body,
     _heuristic_pick,
     _llm_curate,
     _static_fallback,
     age_band,
+    build_digest_preview,
     create_digest,
     occupation_tokens,
     personalize_candidates,
@@ -75,8 +75,7 @@ def test_create_digest_without_llm_forces_seoul_timezone(db_session, monkeypatch
         digest = create_digest(db_session, user, pref, status="draft")
         assert digest.id
         assert pref.timezone == "Asia/Seoul"
-        body = _format_body("너", _heuristic_pick(_cands(), "seed"), pref, ["경제"])
-        assert "요청 반영" in body or "오늘의 3" in body
+        assert "왜:" in digest.body or "왜 " in digest.body
     finally:
         get_settings.cache_clear()
 
@@ -166,6 +165,64 @@ def test_llm_curate_accepts_fenced_json_and_url_prefix(db_session, monkeypatch):
         get_settings.cache_clear()
 
 
+def test_llm_curate_keeps_site_why_not_invented_stats(db_session, monkeypatch):
+    cands = [
+        SourceItem(
+            kind="아티클",
+            title="금리 연준",
+            url="https://a.example",
+            summary="아티클",
+            source="HN",
+            site_id="hn",
+            pick_reason="HN 프론트페이지",
+        ),
+        SourceItem(
+            kind="유튜브",
+            title="B",
+            url="https://b.example",
+            summary="s",
+            source="s",
+            pick_reason="조회수 1만+ 영상",
+        ),
+        SourceItem(
+            kind="커뮤니티",
+            title="C",
+            url="https://c.example",
+            summary="s",
+            source="s",
+            pick_reason="커뮤니티 인기글",
+        ),
+    ]
+    payload = {
+        "title": "하루만장",
+        "items": [
+            {"kind": "아티클", "title": "t1", "blurb": "b입니다.", "url": "https://a.example", "why": "좋아요 2만"},
+            {"kind": "유튜브", "title": "t2", "blurb": "b입니다.", "url": "https://b.example"},
+            {"kind": "커뮤니티", "title": "t3", "blurb": "b입니다.", "url": "https://c.example"},
+        ],
+    }
+    monkeypatch.setenv("LLM_API_KEY", "k")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        "app.services.digest.llm_service.chat_completion",
+        lambda *_a, **_k: (json.dumps(payload), None),
+    )
+    try:
+        user = _approved_user(db_session, "c-why@example.com")
+        pref = Preference(user_id=user.id, topics="경제", notes="")
+        db_session.add(pref)
+        db_session.flush()
+        result, reason, _raw = _llm_curate(db_session, user, pref, cands)
+        assert reason == ""
+        assert result is not None
+        _title, body, items = result
+        assert items[0]["why"] == "HN 프론트페이지"
+        assert "왜 HN 프론트페이지" in body
+        assert "좋아요 2만" not in body
+    finally:
+        get_settings.cache_clear()
+
+
 def test_llm_curate_invalid_json(db_session, monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "k")
     get_settings.cache_clear()
@@ -248,6 +305,8 @@ def test_llm_curate_prompt_asks_for_seumnida_style(db_session, monkeypatch):
     assert "큐레이터다" not in prompt
     assert "간호사" in prompt
     assert "직업:" in prompt
+    assert "한국 사용자" in prompt
+    assert "선정 신호" in prompt
 
 
 def test_age_band_and_profile_brief_omit_raw_birthday():
@@ -269,10 +328,109 @@ def test_personalize_candidates_prefers_occupation_tokens():
     assert ranked[0].url == "https://b.example"
 
 
+def test_personalize_candidates_prefers_korean_articles_and_videos():
+    user = User(email="k@example.com", display_name="민수", occupation="")
+    items = [
+        SourceItem(
+            kind="아티클",
+            title="Fed holds rates again",
+            url="https://www.bloomberg.com/news/rates",
+            summary="Treasury yields",
+            source="Bloomberg",
+        ),
+        SourceItem(
+            kind="아티클",
+            title="코스피, 외국인 매수에 상승",
+            url="https://n.news.naver.com/article/001",
+            summary="국내 증시 마감",
+            source="네이버",
+        ),
+        SourceItem(
+            kind="유튜브",
+            title="오늘 시황 브리핑",
+            url="https://www.youtube.com/watch?v=krvid",
+            summary="국내 시장",
+            source="삼프로TV",
+        ),
+    ]
+    ranked = personalize_candidates(items, user)
+    assert ranked[0].url.startswith("https://n.news.naver.com") or ranked[0].kind == "유튜브"
+    assert ranked[-1].url.startswith("https://www.bloomberg.com")
+
+
 def test_occupation_tokens_expand_job_aliases():
     tokens = occupation_tokens("내과 의사")
     assert "의사" in tokens
     assert "의료" in tokens
+
+
+def test_build_digest_preview_llm_prompt_is_shortlist_reviewed_count_is_pool(db_session, monkeypatch):
+    captured: dict[str, object] = {}
+
+    def capture(*_a, **kwargs):
+        captured["messages"] = kwargs["messages"]
+        return None, None
+
+    spam = [
+        SourceItem(
+            kind="아티클",
+            title=f"Buy gadget deal {i:02d} extra",
+            url=f"https://spam.example/{i}",
+            summary="shop",
+            source="Blog",
+        )
+        for i in range(40)
+    ]
+    keepers = [
+        SourceItem(
+            kind="아티클",
+            title="코스피 반도체 수출 호조 기록",
+            url="https://n.news.naver.com/semi",
+            summary="국내 증시",
+            source="네이버",
+        ),
+        SourceItem(
+            kind="유튜브",
+            title="오늘 시황 브리핑입니다",
+            url="https://www.youtube.com/watch?v=kr1",
+            summary="국내 시장",
+            source="삼프로TV",
+        ),
+        SourceItem(
+            kind="커뮤니티",
+            title="국내주식 수급 토론 모음입니다",
+            url="https://finance.naver.com/talk",
+            summary="수급",
+            source="네이버",
+        ),
+    ]
+    pool = keepers + spam
+    user = User(
+        email="short@example.com",
+        display_name="민수",
+        occupation="반도체 연구원",
+        password_hash=hash_password("abcdefgh"),
+        status="approved",
+    )
+    db_session.add(user)
+    db_session.flush()
+    pref = Preference(user_id=user.id, topics="경제/주식/국내증시", notes="")
+    db_session.add(pref)
+    db_session.commit()
+    monkeypatch.setattr("app.services.digest.gather_candidates", lambda *a, **k: pool)
+    monkeypatch.setenv("LLM_API_KEY", "k")
+    get_settings.cache_clear()
+    monkeypatch.setattr("app.services.digest.llm_service.chat_completion", capture)
+    try:
+        preview = build_digest_preview(db_session, user, pref)
+    finally:
+        get_settings.cache_clear()
+
+    prompt = captured["messages"][1]["content"]
+    assert "코스피 반도체" in prompt
+    assert "Buy gadget deal 39 extra" not in prompt
+    assert len(preview.candidates) == 43
+    assert "43개 중 골랐습니다." in preview.body
 
 
 def test_heuristic_keeps_personalized_order_and_kind_mix():

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models import CrawlRun, Digest, User
 from app.services.kakao import send_digest_via_kakao
+from app.services.fcm import notify_digest_sent
 from app.services.pipeline_timing import elapsed_ms, total_ms
 from app.services.run_resources import apply_peak_to_run, peak_sampler
 
@@ -69,6 +70,8 @@ async def deliver_digest(
     digest.status = "sent" if ok else "failed"
     digest.error_message = err
     digest.sent_at = datetime.now(timezone.utc) if ok else None
+    if ok:
+        notify_digest_sent(db, user.id, digest.title, digest.body)
     timed = apply_send_timing(
         db,
         digest.id,

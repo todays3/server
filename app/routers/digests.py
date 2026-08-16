@@ -36,6 +36,7 @@ def _digest_out(digest: Digest) -> DigestOut:
                         topic=str(row.get("topic") or row.get("hint") or ""),
                         insight_q=str(row.get("insight_q") or ""),
                         insight_url=str(row.get("insight_url") or ""),
+                        why=str(row.get("why") or ""),
                     )
                 )
     except json.JSONDecodeError:

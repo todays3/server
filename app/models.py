@@ -25,6 +25,8 @@ class User(Base):
     preference: Mapped["Preference"] = relationship(back_populates="user", uselist=False)
     kakao: Mapped["KakaoAccount | None"] = relationship(back_populates="user", uselist=False)
     digests: Mapped[list["Digest"]] = relationship(back_populates="user")
+    push_devices: Mapped[list["PushDevice"]] = relationship(back_populates="user")
+    sticky_notes: Mapped[list["StickyNote"]] = relationship(back_populates="user")
 
 
 class Preference(Base):
@@ -114,6 +116,36 @@ class CrawlRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
     user: Mapped[User] = relationship()
+
+
+class PushDevice(Base):
+    """One FCM token per browser/app install. A Kakao user may have many devices."""
+
+    __tablename__ = "push_devices"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    token: Mapped[str] = mapped_column(String(4096), unique=True)
+    device_id: Mapped[str] = mapped_column(String(80), default="", index=True)
+    platform: Mapped[str] = mapped_column(String(16), default="web")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    user: Mapped[User] = relationship(back_populates="push_devices")
+
+
+class StickyNote(Base):
+    """Public suggestion slip. Nickname is snapshotted; user_id stays server-only."""
+
+    __tablename__ = "sticky_notes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    nickname: Mapped[str] = mapped_column(String(120), default="")
+    body: Mapped[str] = mapped_column(String(400))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    user: Mapped[User] = relationship(back_populates="sticky_notes")
 
 
 class LlmUsage(Base):

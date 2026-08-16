@@ -1,16 +1,15 @@
 """Digest scheduler at each user's chosen Asia/Seoul send times.
 
-Personalized prep (crawl + LLM) is blocking I/O, so a few users run
-concurrently via a bounded asyncio semaphore + worker threads.
-One OS thread per user is unnecessary at 2–3 recipients; a cap of 3
-overlaps Groq/Kakao/RSS waits without extra SQLite writer stampede.
+Nearby slots share one in-memory crawl (no extra DB). Personalize + send
+still fan out per reservation on a small asyncio pool.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import threading
-from dataclasses import dataclass
+from collections import defaultdict
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from os import getenv
 from zoneinfo import ZoneInfo
@@ -23,8 +22,11 @@ from app.db import SessionLocal
 from app.models import CrawlRun, Digest, Preference, User
 from app.services.delivery import deliver_digest
 from app.services.digest import create_digest
-from app.services.pipeline_timing import due_actions, suggested_lead_minutes_from_db
+from app.services.pipeline_timing import TICK_SECONDS, due_actions, suggested_lead_seconds_from_db
 from app.services.send_times import parse_send_times_raw, slot_set
+from app.services.shared_crawl import ensure_shared_crawl, get_shared_items, slice_shared_items
+from app.services.slot_cluster import cluster_key, cluster_slot_labels
+from app.services.sources import SourceItem
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +56,7 @@ class DueJob:
     day: str
     tz_name: str
     lead_ms: int
+    cluster_key: str = ""
 
 
 def aware_now(tz: ZoneInfo) -> datetime:
@@ -148,7 +151,7 @@ def collect_due_jobs(db: Session) -> list[DueJob]:
         .where(Preference.enabled.is_(True))
         .options(joinedload(Preference.user).joinedload(User.kakao))
     ).all()
-    lead_minutes = suggested_lead_minutes_from_db(db)
+    lead_seconds = suggested_lead_seconds_from_db(db)
     jobs: list[DueJob] = []
     for pref in prefs:
         user = pref.user
@@ -161,7 +164,7 @@ def collect_due_jobs(db: Session) -> list[DueJob]:
             parse_send_times_raw(pref.send_times, hour=pref.send_hour, minute=pref.send_minute)
         )
         day = now.date().isoformat()
-        for slot_label, phase in due_actions(now, slots, lead_minutes):
+        for slot_label, phase in due_actions(now, slots, lead_seconds):
             slot_key = _slot_key(user.id, day, slot_label)
             with _state_lock:
                 already_marked = slot_key in _sent_slots
@@ -192,12 +195,72 @@ def collect_due_jobs(db: Session) -> list[DueJob]:
     return jobs
 
 
-def _create_scheduled_digest(user_id: int, slot_label: str, lead_ms: int) -> int | None:
+def attach_cluster_keys(jobs: list[DueJob]) -> list[DueJob]:
+    by_day: dict[str, list[DueJob]] = defaultdict(list)
+    for job in jobs:
+        by_day[job.day].append(job)
+    out: list[DueJob] = []
+    for day, group in by_day.items():
+        labels = [job.slot_label for job in group]
+        mapping: dict[str, str] = {}
+        for members in cluster_slot_labels(labels):
+            start = members[0]
+            for label in members:
+                mapping[label] = cluster_key(day, start)
+        for job in group:
+            out.append(replace(job, cluster_key=mapping.get(job.slot_label, cluster_key(day, job.slot_label))))
+    return out
+
+
+def _split_csv(raw: str | None) -> list[str]:
+    return [part.strip() for part in (raw or "").split(",") if part.strip()]
+
+
+def union_topics_and_sites(db: Session, jobs: list[DueJob]) -> tuple[list[str], list[str]]:
+    topics: list[str] = []
+    sites: list[str] = []
+    seen_topics: set[str] = set()
+    seen_sites: set[str] = set()
+    for job in jobs:
+        user = db.get(User, job.user_id)
+        pref = None if user is None else user.preference
+        if pref is None:
+            continue
+        for topic in _split_csv(pref.topics):
+            if topic not in seen_topics:
+                seen_topics.add(topic)
+                topics.append(topic)
+        for site in _split_csv(pref.sources):
+            if site not in seen_sites:
+                seen_sites.add(site)
+                sites.append(site)
+    return topics, sites
+
+
+def _candidates_for_job(job: DueJob, pref: Preference) -> list[SourceItem] | None:
+    if not job.cluster_key:
+        return None
+    pool = get_shared_items(job.cluster_key)
+    if pool is None:
+        return None
+    return slice_shared_items(pool, sites=_split_csv(pref.sources))
+
+
+def _create_scheduled_digest(user_id: int, slot_label: str, lead_ms: int, cluster_key_value: str = "") -> int | None:
     db = SessionLocal()
     try:
         user = db.get(User, user_id)
         if user is None or user.preference is None:
             return None
+        job = DueJob(
+            user_id=user_id,
+            slot_label=slot_label,
+            phase="prepare",
+            day="",
+            tz_name="",
+            lead_ms=lead_ms,
+            cluster_key=cluster_key_value,
+        )
         digest = create_digest(
             db,
             user,
@@ -206,6 +269,7 @@ def _create_scheduled_digest(user_id: int, slot_label: str, lead_ms: int) -> int
             trigger="schedule",
             slot_label=slot_label,
             lead_ms=lead_ms,
+            shared_candidates=_candidates_for_job(job, user.preference),
         )
         return digest.id
     finally:
@@ -234,7 +298,11 @@ async def execute_due_job(job: DueJob) -> None:
 
         if digest is None:
             digest_id = await asyncio.to_thread(
-                _create_scheduled_digest, job.user_id, job.slot_label, job.lead_ms
+                _create_scheduled_digest,
+                job.user_id,
+                job.slot_label,
+                job.lead_ms,
+                job.cluster_key,
             )
             with _state_lock:
                 _prepared_slots.add(slot_key)
@@ -263,25 +331,36 @@ async def execute_due_job(job: DueJob) -> None:
 async def tick_morning_digests() -> None:
     db = SessionLocal()
     try:
-        jobs = collect_due_jobs(db)
+        jobs = attach_cluster_keys(collect_due_jobs(db))
+        unions = {key: union_topics_and_sites(db, group) for key, group in _jobs_by_cluster(jobs).items()}
     finally:
         db.close()
     if not jobs:
         return
-    sem = asyncio.Semaphore(max_parallel_users())
+    for key, group in _jobs_by_cluster(jobs).items():
+        topics, sites = unions.get(key, ([], []))
+        await asyncio.to_thread(ensure_shared_crawl, key, topics, sites)
+        sem = asyncio.Semaphore(max_parallel_users())
 
-    async def _run(job: DueJob) -> None:
-        async with sem:
-            try:
-                await execute_due_job(job)
-            except Exception:
-                log.exception(
-                    "scheduled digest failed user_id=%s slot=%s",
-                    job.user_id,
-                    job.slot_label,
-                )
+        async def _run(job: DueJob, sem: asyncio.Semaphore = sem) -> None:
+            async with sem:
+                try:
+                    await execute_due_job(job)
+                except Exception:
+                    log.exception(
+                        "scheduled digest failed user_id=%s slot=%s",
+                        job.user_id,
+                        job.slot_label,
+                    )
 
-    await asyncio.gather(*(_run(job) for job in jobs))
+        await asyncio.gather(*(_run(job) for job in group))
+
+
+def _jobs_by_cluster(jobs: list[DueJob]) -> dict[str, list[DueJob]]:
+    grouped: dict[str, list[DueJob]] = defaultdict(list)
+    for job in jobs:
+        grouped[job.cluster_key or job.slot_label].append(job)
+    return grouped
 
 
 def start_scheduler() -> None:
@@ -290,7 +369,7 @@ def start_scheduler() -> None:
     scheduler.add_job(
         tick_morning_digests,
         "interval",
-        minutes=1,
+        seconds=TICK_SECONDS,
         id="morning-digest",
         max_instances=1,
         coalesce=True,
