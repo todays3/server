@@ -75,7 +75,7 @@ def test_create_digest_without_llm_forces_seoul_timezone(db_session, monkeypatch
         digest = create_digest(db_session, user, pref, status="draft")
         assert digest.id
         assert pref.timezone == "Asia/Seoul"
-        assert "왜:" in digest.body or "왜 " in digest.body
+        assert "선정이유:" in digest.body
     finally:
         get_settings.cache_clear()
 
@@ -217,7 +217,7 @@ def test_llm_curate_keeps_site_why_not_invented_stats(db_session, monkeypatch):
         assert result is not None
         _title, body, items = result
         assert items[0]["why"] == "HN 프론트페이지"
-        assert "왜 HN 프론트페이지" in body
+        assert "선정이유: HN 프론트페이지" in body
         assert "좋아요 2만" not in body
     finally:
         get_settings.cache_clear()
@@ -430,7 +430,8 @@ def test_build_digest_preview_llm_prompt_is_shortlist_reviewed_count_is_pool(db_
     assert "코스피 반도체" in prompt
     assert "Buy gadget deal 39 extra" not in prompt
     assert len(preview.candidates) == 43
-    assert "43개 중 골랐습니다." in preview.body
+    assert "43개 중 골랐습니다." not in preview.body
+    assert "오늘 43개 중에 고른" in preview.body
 
 
 def test_heuristic_keeps_personalized_order_and_kind_mix():

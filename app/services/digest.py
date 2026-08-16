@@ -20,6 +20,7 @@ from app.services import llm as llm_service
 from app.services.crawl_log import persist_crawl_run
 from app.services.pipeline_timing import elapsed_ms
 from app.services.run_resources import peak_sampler
+from app.services.greeting import greeting_line
 from app.services.pick_reason import KIND_WHY, clip_why, compose_pick_reason
 from app.services.shortlist import shortlist_for_llm, topic_tokens
 from app.services.sources import SourceItem, candidates_as_prompt_block, gather_candidates
@@ -253,11 +254,6 @@ def _kind_emoji(kind: str) -> str:
     return "📰"
 
 
-def reviewed_line(count: int) -> str:
-    n = max(count, 1)
-    return f"{n}개 중 골랐습니다."
-
-
 _ITEM_RULE = "────────"
 _ORDINALS = ("첫째", "둘째", "셋째", "넷째", "다섯째")
 
@@ -285,13 +281,15 @@ def _format_body(
     topics: list[str],
     *,
     reviewed_count: int | None = None,
+    now: datetime | None = None,
 ) -> str:
     n = reviewed_count if reviewed_count is not None else len(items)
     _ = topics
     picked = max(len(items), 1)
+    when = now or datetime.now(ZoneInfo(SEOUL))
     lines: list[str] = [
-        f"하루만장 · {name}님",
-        f"오늘 고른 {picked}개입니다.",
+        greeting_line(name, now=when),
+        f"오늘 {n}개 중에 고른 {picked}개입니다.",
         "",
     ]
     show_insight = _wants_insights(pref)
@@ -309,19 +307,18 @@ def _format_body(
             lines.append(blurb)
         why = clip_why(item.get("why") or "")
         if why:
-            lines.append(f"왜 {why}")
+            lines.append(f"선정이유: {why}")
         lines.append(str(item.get("url") or ""))
         if show_insight:
             iq = _lead_sentence(item.get("insight_q") or "", max_len=60)
             iu = (item.get("insight_url") or "").strip()
             if iq and iu:
-                lines.append(f"궁금 {iq}")
+                lines.append(f"추가 질문: {iq}")
                 lines.append(iu)
         lines.append("")
     custom = _customization(pref)
     if custom:
         lines.append(f"요청: {custom}")
-    lines.append(reviewed_line(n))
     return "\n".join(lines).strip()
 
 
@@ -577,6 +574,7 @@ def _llm_curate(
             pref,
             topics_list,
             reviewed_count=len(reviewed),
+            now=datetime.now(ZoneInfo(SEOUL)),
         )
         if timings is not None:
             timings["format_ms"] = elapsed_ms(fmt_started)
@@ -679,7 +677,7 @@ def build_digest_preview(
     aggregation_ms = elapsed_ms(agg_started)
     _emit(on_progress, "format")
     fmt_started = perf_counter()
-    body = _format_body(name, labeled, pref, topics, reviewed_count=len(candidates))
+    body = _format_body(name, labeled, pref, topics, reviewed_count=len(candidates), now=now)
     format_ms = elapsed_ms(fmt_started)
     return DigestPreview(
         title=title,

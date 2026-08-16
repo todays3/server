@@ -34,7 +34,7 @@ def test_format_body_includes_short_why_line():
         }
     ]
     body = _format_body("테스트", items, pref, ["경제"])
-    assert "왜 HN 프론트페이지" in body
+    assert "선정이유: HN 프론트페이지" in body
 
 
 def test_personalize_attaches_pick_reason_and_job_flag():

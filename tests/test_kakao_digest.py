@@ -1,8 +1,11 @@
 """Kakao memo chunking + digest item attachment tests."""
 
-from app.services.kakao import MEMO_TEXT_LIMIT, split_memo_chunks
-from app.services.digest import _attach_insights, _format_body
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from app.models import Preference
+from app.services.digest import _attach_insights, _format_body
+from app.services.kakao import MEMO_TEXT_LIMIT, split_memo_chunks
 
 
 def test_split_memo_chunks_single_when_short():
@@ -45,18 +48,18 @@ def test_format_body_includes_insight_when_enabled():
             "insight_url": "https://b.example",
         }
     ]
-    body = _format_body("테스트", items, pref, ["경제/주식"], reviewed_count=12)
-    assert body.splitlines()[0] == "하루만장 · 테스트님"
-    assert "오늘 고른 1개입니다." in body
+    body = _format_body("테스트", items, pref, ["경제/주식"], reviewed_count=12, now=datetime(2026, 8, 16, 18, 0, tzinfo=ZoneInfo("Asia/Seoul")))
+    assert "하루만장 ·" not in body.splitlines()[0]
+    assert body.splitlines()[0].endswith("테스트님.") or body.splitlines()[0].endswith("테스트님?")
+    assert "오늘 12개 중에 고른 1개입니다." in body
     assert "첫째. 📰 금리" in body
     assert "[아티클]" not in body
     assert "주제:" not in body
     assert "기술주도 흔들렸습니다" not in body
     assert "연준 발언입니다." in body
-    assert "궁금 " in body
+    assert "추가 질문:" in body
     assert "https://b.example" in body
-    assert "12개 중 골랐습니다." in body
-    assert body.index("첫째") < body.index("12개 중")
+    assert "12개 중 골랐습니다." not in body
 
 
 def test_format_body_puts_a_rule_between_articles():
@@ -69,7 +72,7 @@ def test_format_body_puts_a_rule_between_articles():
     body = _format_body("민수", items, pref, ["경제"])
     assert body.count("────────") == 2
     assert "첫째." in body and "둘째." in body and "셋째." in body
-    assert "왜 한경 헤드라인" in body
+    assert "선정이유: 한경 헤드라인" in body
     assert "요청: 짧게" in body
     assert "— 하루만장" not in body
 
