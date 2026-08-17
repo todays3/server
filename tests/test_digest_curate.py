@@ -447,3 +447,36 @@ def test_heuristic_keeps_personalized_order_and_kind_mix():
     assert picked[0]["url"] == "https://semi.example"
     assert {row["kind"] for row in picked} >= {"아티클", "유튜브", "커뮤니티"}
 
+
+def test_build_digest_preview_picks_three_items_per_hired_assistant(db_session, monkeypatch):
+    user = _approved_user(db_session, "roles2@example.com")
+    pref = Preference(
+        user_id=user.id,
+        topics="IT/개발/all,음악/장르/K-POP",
+        roles="developer,music",
+        timezone="Asia/Seoul",
+        sources="hn,melon",
+    )
+    db_session.add(pref)
+    db_session.commit()
+    pool = [
+        SourceItem(kind="아티클", title="React 19", url="https://it1.example", summary="프론트", source="HN", site_id="hn"),
+        SourceItem(kind="유튜브", title="타입스크립트", url="https://it2.example", summary="언어", source="YT", site_id="github-trending"),
+        SourceItem(kind="커뮤니티", title="OKKY", url="https://it3.example", summary="개발", source="OKKY", site_id="okky"),
+        SourceItem(kind="아티클", title="멜론 차트", url="https://mu1.example", summary="차트", source="멜론", site_id="melon"),
+        SourceItem(kind="유튜브", title="신곡 MV", url="https://mu2.example", summary="뮤비", source="지니", site_id="genie"),
+        SourceItem(kind="커뮤니티", title="한터", url="https://mu3.example", summary="음반", source="한터", site_id="hanteo"),
+    ]
+    monkeypatch.setattr("app.services.digest.gather_candidates", lambda *a, **k: pool)
+    monkeypatch.setenv("LLM_API_KEY", "")
+    get_settings.cache_clear()
+    try:
+        preview = build_digest_preview(db_session, user, pref)
+    finally:
+        get_settings.cache_clear()
+    assert len(preview.items) == 6
+    assistants = [row.get("assistant") for row in preview.items]
+    assert assistants.count("민준") == 3
+    assert assistants.count("하람") == 3
+    assert preview.body.count("고른 3개입니다.") == 2
+

@@ -70,6 +70,23 @@ def test_catalog_includes_design_and_kr_tech_sites():
     labels = {g["id"]: g["label"] for g in catalog_payload()["groups"]}
     assert "design" in labels
     assert any("디자인" in g["match"] for g in catalog_payload()["groups"] if g["id"] == "design")
+    for sid in (
+        "playdb",
+        "kopis",
+        "interpark-ticket",
+        "melon-ticket",
+        "yes24-ticket",
+        "ticketlink",
+        "ntok",
+        "sejongpac",
+        "sac",
+        "lgart",
+        "themusical",
+        "culture-portal",
+    ):
+        assert sid in ids
+    assert "theater-kr" in labels
+    assert groups_for_mega("극예술")
 
 
 def test_catalog_payload_shape():
@@ -83,6 +100,24 @@ def test_catalog_payload_shape():
     assert "medicine-clinical" in payload["mega_map"]["의학"]
     assert "semi-academic" in payload["mega_map"]["반도체"]
     assert all("sites" in g for g in payload["groups"])
+    for group in payload["groups"]:
+        for site in group["sites"]:
+            assert "dau" in site
+            assert site["dau"] > 0
+
+
+def test_catalog_sites_sorted_by_dau_desc():
+    payload = catalog_payload()
+    for group in payload["groups"]:
+        daus = [site["dau"] for site in group["sites"]]
+        assert daus == sorted(daus, reverse=True)
+
+
+def test_all_catalog_sites_have_explicit_dau():
+    from app.catalog.ref_sites import SITE_DAU, all_site_ids
+
+    missing = set(all_site_ids()) - set(SITE_DAU)
+    assert not missing, f"sites missing SITE_DAU estimate: {sorted(missing)}"
 
 
 def test_html_list_parser_extracts_anchors(monkeypatch):

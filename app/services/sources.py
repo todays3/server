@@ -63,6 +63,14 @@ _RSS_CATALOG: list[tuple[str, str, str, str]] = [
     ("아티클", "Google News UX", "UX", "https://news.google.com/rss/search?q=UX+design&hl=en-US&gl=US&ceid=US:en"),
     ("아티클", "Google News 연애", "연애", "https://news.google.com/rss/search?q=%EC%97%B0%EC%95%A0&hl=ko&gl=KR&ceid=KR:ko"),
     ("아티클", "Google News 커리어", "커리어", "https://news.google.com/rss/search?q=%EC%9D%B4%EC%A7%81+%EB%A9%B4%EC%A0%91&hl=ko&gl=KR&ceid=KR:ko"),
+    ("아티클", "Google News 음악", "음악", "https://news.google.com/rss/search?q=%EC%9D%8C%EC%95%85+%EC%B0%A8%ED%8A%B8&hl=ko&gl=KR&ceid=KR:ko"),
+    ("아티클", "Google News 도서", "도서", "https://news.google.com/rss/search?q=%EB%8F%84%EC%84%9C+%EB%B2%A0%EC%8A%A4%ED%8A%B8%EC%85%80%EB%9F%AC&hl=ko&gl=KR&ceid=KR:ko"),
+    ("아티클", "Google News 영화", "영화", "https://news.google.com/rss/search?q=%EC%98%81%ED%99%94+%EC%83%81%EC%98%81&hl=ko&gl=KR&ceid=KR:ko"),
+    ("아티클", "Google News 애니", "애니", "https://news.google.com/rss/search?q=%EC%95%A0%EB%8B%88%EB%A9%94%EC%9D%B4%EC%85%98&hl=ko&gl=KR&ceid=KR:ko"),
+    ("아티클", "Google News 라노벨", "라노벨", "https://news.google.com/rss/search?q=%EB%9D%BC%EC%9D%B4%ED%8A%B8%EB%85%B8%EB%B8%94&hl=ko&gl=KR&ceid=KR:ko"),
+    ("아티클", "Google News 만화", "만화", "https://news.google.com/rss/search?q=%EC%9B%B9%ED%88%B0+%EB%A7%8C%ED%99%94&hl=ko&gl=KR&ceid=KR:ko"),
+    ("아티클", "Google News 오타쿠", "오타쿠", "https://news.google.com/rss/search?q=%EC%95%A0%EB%8B%88+%EB%9D%BC%EC%9D%B4%ED%8A%B8%EB%85%B8%EB%B8%94+%EB%A7%8C%ED%99%94&hl=ko&gl=KR&ceid=KR:ko"),
+    ("아티클", "Google News 극예술", "극예술", "https://news.google.com/rss/search?q=%EC%97%B0%EA%B7%B9+%EB%AE%A4%EC%A7%80%EC%BB%AC&hl=ko&gl=KR&ceid=KR:ko"),
     ("커뮤니티", "HN Frontpage", "IT", "https://hnrss.org/frontpage"),
     ("커뮤니티", "r/stocks", "주식", "https://www.reddit.com/r/stocks/.rss"),
     ("커뮤니티", "r/investing", "미국증시", "https://www.reddit.com/r/investing/.rss"),
@@ -661,6 +669,195 @@ _SITE_FEEDS: dict[str, list[tuple[str, str, str]]] = {
     "sciencedirect": [
         ("아티클", "ScienceDirect", "https://news.google.com/rss/search?q=site:sciencedirect.com+solid-state+electronics+semiconductor&hl=en-US&gl=US&ceid=US:en"),
         ("아티클", "Elsevier materials", "https://news.google.com/rss/search?q=Elsevier+semiconductor+materials+engineering&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "melon": [
+        ("아티클", "멜론·음악", "https://news.google.com/rss/search?q=site:melon.com+OR+%EB%A9%94%EB%A1%A0+%EC%B0%A8%ED%8A%B8&hl=ko&gl=KR&ceid=KR:ko"),
+        ("아티클", "K-POP 차트", "https://news.google.com/rss/search?q=K-POP+%EC%B0%A8%ED%8A%B8+%EC%8B%A0%EA%B3%A1&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "genie": [
+        ("아티클", "지니·음악", "https://news.google.com/rss/search?q=site:genie.co.kr+OR+%EC%A7%80%EB%8B%88+%EC%9D%8C%EC%95%85&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "bugs": [
+        ("아티클", "벅스·음악", "https://news.google.com/rss/search?q=site:music.bugs.co.kr+OR+%EB%B2%85%EC%8A%A4+%EC%9D%8C%EC%95%85&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "hanteo": [
+        ("아티클", "한터차트", "https://news.google.com/rss/search?q=%ED%95%9C%ED%84%B0%EC%B0%A8%ED%8A%B8+OR+site:hanteochart.com&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "vibe": [
+        ("아티클", "네이버 VIBE", "https://news.google.com/rss/search?q=site:vibe.naver.com+OR+VIBE+%EC%9D%8C%EC%95%85&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "flo": [
+        ("아티클", "FLO·음악", "https://news.google.com/rss/search?q=FLO+%EC%9D%8C%EC%95%85+OR+site:music-flo.com&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "billboard": [
+        ("아티클", "Billboard", "https://www.billboard.com/feed/"),
+        ("아티클", "Billboard Google", "https://news.google.com/rss/search?q=site:billboard.com&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "pitchfork": [
+        ("아티클", "Pitchfork", "https://pitchfork.com/feed/feed-news/rss/"),
+        ("아티클", "Pitchfork Google", "https://news.google.com/rss/search?q=site:pitchfork.com&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "spotify-news": [
+        ("아티클", "Spotify Newsroom", "https://newsroom.spotify.com/feed/"),
+        ("아티클", "Spotify Google", "https://news.google.com/rss/search?q=site:newsroom.spotify.com&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "rolling-stone": [
+        ("아티클", "Rolling Stone", "https://www.rollingstone.com/feed/"),
+        ("아티클", "Rolling Stone Google", "https://news.google.com/rss/search?q=site:rollingstone.com+music&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "aladin": [
+        ("아티클", "알라딘·도서", "https://news.google.com/rss/search?q=site:aladin.co.kr+OR+%EC%95%8C%EB%9D%BC%EB%94%98+%EB%8F%84%EC%84%9C&hl=ko&gl=KR&ceid=KR:ko"),
+        ("아티클", "베스트셀러", "https://news.google.com/rss/search?q=%EB%B2%A0%EC%8A%A4%ED%8A%B8%EC%85%80%EB%9F%AC+%EC%8B%A0%EA%B0%84&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "yes24": [
+        ("아티클", "YES24·도서", "https://news.google.com/rss/search?q=site:yes24.com+OR+YES24+%EB%8F%84%EC%84%9C&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "kyobo": [
+        ("아티클", "교보문고", "https://news.google.com/rss/search?q=site:kyobobook.co.kr+OR+%EA%B5%90%EB%B3%B4%EB%AC%B8%EA%B3%A0&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "ridibooks": [
+        ("아티클", "리디·전자책", "https://news.google.com/rss/search?q=site:ridibooks.com+OR+%EB%A6%AC%EB%94%94+%EC%A0%84%EC%9E%90%EC%B1%85&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "bookjournal": [
+        ("아티클", "북저널리즘", "https://news.google.com/rss/search?q=site:bookjournalism.com+OR+%EB%B6%81%EC%A0%80%EB%84%90%EB%A6%AC%EC%A6%98&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "millie": [
+        ("아티클", "밀리의 서재", "https://news.google.com/rss/search?q=site:millie.co.kr+OR+%EB%B0%80%EB%A6%AC%EC%9D%98+%EC%84%9C%EC%9E%AC&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "cgv": [
+        ("아티클", "CGV·영화", "https://news.google.com/rss/search?q=site:cgv.co.kr+OR+CGV+%EC%98%81%ED%99%94&hl=ko&gl=KR&ceid=KR:ko"),
+        ("아티클", "상영·개봉", "https://news.google.com/rss/search?q=%EC%98%81%ED%99%94+%EC%83%81%EC%98%81+%EA%B0%9C%EB%B4%89&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "lotte-cinema": [
+        ("아티클", "롯데시네마", "https://news.google.com/rss/search?q=site:lottecinema.co.kr+OR+%EB%A1%9C%EB%98%90%EC%8B%9C%EB%84%A4%EB%A7%88&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "megabox": [
+        ("아티클", "메가박스", "https://news.google.com/rss/search?q=site:megabox.co.kr+OR+%EB%A9%94%EA%B0%80%EB%B0%95%EC%8A%A4&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "kobis": [
+        ("아티클", "KOBIS 박스오피스", "https://news.google.com/rss/search?q=site:kobis.or.kr+OR+%EB%B0%95%EC%8A%A4%EC%98%A4%ED%94%BC%EC%8A%A4&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "cine21": [
+        ("아티클", "씨네21", "https://news.google.com/rss/search?q=site:cine21.com+OR+%EC%94%A8%EB%84%A421&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "maxmovie": [
+        ("아티클", "맥스무비", "https://news.google.com/rss/search?q=site:maxmovie.com+OR+%EB%A7%A5%EC%8A%A4%EB%AC%B4%EB%B9%84&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "watcha-pedia": [
+        ("아티클", "왓챠피디아", "https://news.google.com/rss/search?q=site:pedia.watcha.com+OR+%EC%99%93%EC%B1%A0+%EC%98%81%ED%99%94&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "animenewsnetwork": [
+        ("아티클", "Anime News Network", "https://www.animenewsnetwork.com/news/rss.xml"),
+        ("아티클", "ANN Google", "https://news.google.com/rss/search?q=site:animenewsnetwork.com&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "myanimelist": [
+        ("아티클", "MyAnimeList", "https://news.google.com/rss/search?q=site:myanimelist.net+anime&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "anilist": [
+        ("아티클", "AniList", "https://news.google.com/rss/search?q=site:anilist.co+OR+AniList+anime&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "syosetu": [
+        ("아티클", "なろう·웹소설", "https://news.google.com/rss/search?q=site:syosetu.com+OR+%EB%9D%BC%EC%9D%B4%ED%8A%B8%EB%85%B8%EB%B8%94&hl=ja&gl=JP&ceid=JP:ja"),
+    ],
+    "kakao-page": [
+        ("아티클", "카카오페이지", "https://news.google.com/rss/search?q=site:page.kakao.com+OR+%EC%B9%B4%EC%B9%B4%EC%98%A4%ED%8E%98%EC%9D%B4%EC%A7%80&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "naver-webtoon": [
+        ("아티클", "네이버 웹툰", "https://news.google.com/rss/search?q=site:comic.naver.com+OR+%EB%84%A4%EC%9D%B4%EB%B2%84+%EC%9B%B9%ED%88%B0&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "comic-walker": [
+        ("아티클", "Comic Walker", "https://news.google.com/rss/search?q=site:comic-walker.com+OR+Comic+Walker&hl=ja&gl=JP&ceid=JP:ja"),
+    ],
+    "lezhin": [
+        ("아티클", "Lezhin Comics", "https://news.google.com/rss/search?q=site:lezhin.com+OR+Lezhin+comics&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "inven": [
+        ("아티클", "인벤·게임", "https://news.google.com/rss/search?q=site:inven.co.kr+게임&hl=ko&gl=KR&ceid=KR:ko"),
+        ("아티클", "게임 신작", "https://news.google.com/rss/search?q=게임+신작+출시&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "ruliweb": [
+        ("아티클", "루리웹·게임", "https://news.google.com/rss/search?q=site:ruliweb.com+게임&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "naver-game": [
+        ("아티클", "네이버 게임", "https://news.google.com/rss/search?q=site:game.naver.com+OR+네이버+게임&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "thisisgame": [
+        ("아티클", "디스이즈게임즈", "https://news.google.com/rss/search?q=site:thisisgame.com+OR+디스이즈게임즈&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "gamemeca": [
+        ("아티클", "게임메카", "https://news.google.com/rss/search?q=site:gamemeca.com+OR+게임메카&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "game-donga": [
+        ("아티클", "게임동아", "https://news.google.com/rss/search?q=site:game.donga.com+OR+게임동아&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "steam-news": [
+        ("아티클", "Steam News", "https://store.steampowered.com/feeds/news.xml"),
+        ("아티클", "Steam Google", "https://news.google.com/rss/search?q=site:store.steampowered.com+game&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "ign": [
+        ("아티클", "IGN", "https://feeds.feedburner.com/ign/games-all"),
+        ("아티클", "IGN Google", "https://news.google.com/rss/search?q=site:ign.com+game&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "gamespot": [
+        ("아티클", "GameSpot", "https://www.gamespot.com/feeds/mashup/"),
+        ("아티클", "GameSpot Google", "https://news.google.com/rss/search?q=site:gamespot.com&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "kotaku": [
+        ("아티클", "Kotaku", "https://kotaku.com/rss"),
+        ("아티클", "Kotaku Google", "https://news.google.com/rss/search?q=site:kotaku.com&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "polygon": [
+        ("아티클", "Polygon", "https://www.polygon.com/rss/index.xml"),
+        ("아티클", "Polygon Google", "https://news.google.com/rss/search?q=site:polygon.com+game&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "pc-gamer": [
+        ("아티클", "PC Gamer", "https://www.pcgamer.com/rss/"),
+        ("아티클", "PC Gamer Google", "https://news.google.com/rss/search?q=site:pcgamer.com&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "rock-paper-shotgun": [
+        ("아티클", "Rock Paper Shotgun", "https://www.rockpapershotgun.com/feed"),
+        ("아티클", "RPS Google", "https://news.google.com/rss/search?q=site:rockpapershotgun.com&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "eurogamer": [
+        ("아티클", "Eurogamer", "https://www.eurogamer.net/feed"),
+        ("아티클", "Eurogamer Google", "https://news.google.com/rss/search?q=site:eurogamer.net&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "playdb": [
+        ("아티클", "PlayDB·공연", "https://news.google.com/rss/search?q=site:playdb.co.kr+OR+PlayDB+%EC%97%B0%EA%B7%B9&hl=ko&gl=KR&ceid=KR:ko"),
+        ("아티클", "연극 트렌드", "https://news.google.com/rss/search?q=%EC%97%B0%EA%B7%B9+%EB%AE%A4%EC%A7%80%EC%BB%AC+%EC%86%8C%EC%8B%9D&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "kopis": [
+        ("아티클", "KOPIS 공연통계", "https://news.google.com/rss/search?q=site:kopis.or.kr+OR+KOPIS+%EA%B3%B5%EC%97%B0&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "interpark-ticket": [
+        ("아티클", "인터파크 티켓", "https://news.google.com/rss/search?q=site:tickets.interpark.com+OR+%EC%9D%B8%ED%84%B0%ED%8C%8C%ED%81%AC+%ED%8B%B0%EC%BC%93+%EC%97%B0%EA%B7%B9&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "melon-ticket": [
+        ("아티클", "멜론티켓", "https://news.google.com/rss/search?q=site:ticket.melon.com+OR+%EB%A9%9C%EB%A1%A0%ED%8B%B0%EC%BC%93+%EB%AE%A4%EC%A7%80%EC%BB%AC&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "yes24-ticket": [
+        ("아티클", "예스24 티켓", "https://news.google.com/rss/search?q=site:ticket.yes24.com+OR+%EC%98%88%EC%8A%A424+%ED%8B%B0%EC%BC%93+%EA%B3%B5%EC%97%B0&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "ticketlink": [
+        ("아티클", "티켓링크", "https://news.google.com/rss/search?q=site:ticketlink.co.kr+OR+%ED%8B%B0%EC%BC%93%EB%A7%81%ED%81%AC+%EA%B3%B5%EC%97%B0&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "ntok": [
+        ("아티클", "국립극장", "https://news.google.com/rss/search?q=site:ntok.go.kr+OR+%EA%B5%AD%EB%A6%BD%EA%B7%B9%EC%9E%A5+%EA%B3%B5%EC%97%B0&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "sejongpac": [
+        ("아티클", "세종문화회관", "https://news.google.com/rss/search?q=site:sejongpac.or.kr+OR+%EC%84%B8%EC%A2%85%EB%AC%B8%ED%99%94%ED%9A%8C%EA%B4%80&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "sac": [
+        ("아티클", "예술의전당", "https://news.google.com/rss/search?q=site:sac.or.kr+OR+%EC%98%88%EC%88%A0%EC%9D%98%EC%A0%84%EB%8B%B9+%EA%B3%B5%EC%97%B0&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "lgart": [
+        ("아티클", "LG아트센터", "https://news.google.com/rss/search?q=site:lgart.com+OR+LG%EC%95%84%ED%8A%B8%EC%84%BC%ED%84%B0&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "themusical": [
+        ("아티클", "더뮤지컬", "https://news.google.com/rss/search?q=site:themusical.co.kr+OR+%EB%8D%94%EB%AE%A4%EC%A7%80%EC%BB%AC&hl=ko&gl=KR&ceid=KR:ko"),
+    ],
+    "culture-portal": [
+        ("아티클", "문화포털", "https://news.google.com/rss/search?q=site:culture.go.kr+OR+%EB%AC%B8%ED%99%94%ED%8F%AC%ED%84%B8+%EA%B3%B5%EC%97%B0&hl=ko&gl=KR&ceid=KR:ko"),
     ],
 }
 

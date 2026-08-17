@@ -80,3 +80,68 @@ async def test_put_prefs_rejects_empty_roles(client: AsyncClient, db_session):
         json={"roles": [], "topics": ["IT/개발/all"]},
     )
     assert res.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_put_prefs_rejects_more_than_two_roles_for_member(client: AsyncClient, db_session):
+    res = await client.put(
+        "/api/v1/prefs",
+        headers=_auth(db_session),
+        json={
+            "roles": ["developer", "investor", "doctor"],
+            "topics": ["IT/개발/all"],
+        },
+    )
+    assert res.status_code == 400
+    assert "2" in res.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_put_prefs_allows_unlimited_roles_for_admin(client: AsyncClient, db_session):
+    admin = User(
+        email="admin@example.com",
+        display_name="관리자",
+        password_hash=hash_password("admin12345"),
+        status="approved",
+        is_admin=True,
+    )
+    db_session.add(admin)
+    db_session.commit()
+    token = {"Authorization": f"Bearer {create_access_token(admin.id)}"}
+    res = await client.put(
+        "/api/v1/prefs",
+        headers=token,
+        json={
+            "roles": ["developer", "investor", "doctor"],
+            "topics": ["IT/개발/all"],
+        },
+    )
+    assert res.status_code == 200
+    assert len(res.json()["roles"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_put_prefs_rejects_four_send_times_for_admin(client: AsyncClient, db_session):
+    admin = User(
+        email="admin-slots@example.com",
+        display_name="관리자",
+        password_hash=hash_password("admin12345"),
+        status="approved",
+        is_admin=True,
+    )
+    db_session.add(admin)
+    db_session.commit()
+    token = {"Authorization": f"Bearer {create_access_token(admin.id)}"}
+    res = await client.put(
+        "/api/v1/prefs",
+        headers=token,
+        json={
+            "send_times": [
+                {"hour": 7, "minute": 0},
+                {"hour": 9, "minute": 0},
+                {"hour": 12, "minute": 0},
+                {"hour": 18, "minute": 0},
+            ],
+        },
+    )
+    assert res.status_code == 422

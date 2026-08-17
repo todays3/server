@@ -1,7 +1,7 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from app.services.greeting import digest_opening_line, greeting_line
+from app.services.greeting import assistant_intro_line, digest_opening_line, greeting_line
 
 SEOUL = ZoneInfo("Asia/Seoul")
 
@@ -14,19 +14,15 @@ def test_evening_six_is_a_simple_hello():
     line = greeting_line("박준석", now=_at(18))
     assert line.endswith("박준석님.") or line.endswith("박준석님?")
     assert "하루만장" not in line
-    assert line in {
-        "좋은 저녁입니다, 박준석님.",
-        "하루 수고하셨습니다, 박준석님.",
-    }
+    assert "입니다" not in line
+    assert "요" in line
 
 
 def test_nineteen_mentions_dinner():
     line = greeting_line("박준석", now=_at(19))
     assert "박준석님" in line
-    assert line in {
-        "저녁식사는 하셨나요, 박준석님?",
-        "저녁 시간입니다, 박준석님.",
-    }
+    assert "저녁" in line
+    assert "요" in line
 
 
 def test_every_hour_has_a_short_line_with_name():
@@ -35,16 +31,29 @@ def test_every_hour_has_a_short_line_with_name():
         assert "민수님" in line
         assert 8 <= len(line) <= 40
         assert "하루만장" not in line
+        assert "입니다" not in line
 
 
 def test_digest_opening_includes_assistant_intro_and_user_hello():
     line = digest_opening_line("박준석", "민준", now=_at(18))
     assert "민준" in line
     assert "박준석님" in line
+    assert "브리프" not in line
+    assert "입니다" not in line
     assert line.endswith("박준석님.") or line.endswith("박준석님?")
 
 
 def test_digest_opening_varies_intro_pattern():
     lines = {digest_opening_line("박준석", "서연", now=_at(h)) for h in range(24)}
-    assert any("서연입니다." in line for line in lines)
-    assert any("브리프" in line for line in lines)
+    assert len(lines) > 3
+    assert all("서연" in line for line in lines)
+    assert all("브리프" not in line for line in lines)
+    assert all("입니다" not in line for line in lines)
+    assert any("서연요" in line or "서연 왔어요" in line for line in lines)
+
+
+def test_assistant_intro_uses_yo_form():
+    intro = assistant_intro_line("하람", now=_at(8))
+    assert "하람" in intro
+    assert "입니다" not in intro
+    assert intro.endswith("요.") or intro.endswith("요?") or intro.endswith("요")
