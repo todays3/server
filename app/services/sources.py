@@ -600,6 +600,68 @@ _SITE_FEEDS: dict[str, list[tuple[str, str, str]]] = {
         ("아티클", "네이버 뉴스", "https://news.google.com/rss?hl=ko&gl=KR&ceid=KR:ko"),
         ("아티클", "네이버 경제", "https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=ko&gl=KR&ceid=KR:ko"),
     ],
+    "arxiv-cs": [
+        ("아티클", "arXiv CS", "https://rss.arxiv.org/rss/cs"),
+        ("아티클", "arXiv CS.AI", "https://rss.arxiv.org/rss/cs.AI"),
+        ("아티클", "arXiv CS.DC", "https://rss.arxiv.org/rss/cs.DC"),
+    ],
+    "acm-dl": [
+        ("아티클", "ACM DL", "https://news.google.com/rss/search?q=site:dl.acm.org&hl=en-US&gl=US&ceid=US:en"),
+        ("아티클", "ACM proceedings", "https://news.google.com/rss/search?q=ACM+conference+proceedings+computer+science&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "ieee-xplore": [
+        ("아티클", "IEEE Xplore", "https://news.google.com/rss/search?q=site:ieeexplore.ieee.org&hl=en-US&gl=US&ceid=US:en"),
+        ("아티클", "IEEE software eng", "https://news.google.com/rss/search?q=IEEE+software+engineering+computer+architecture&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "usenix": [
+        ("아티클", "USENIX blog", "https://www.usenix.org/blog/rss.xml"),
+        ("아티클", "USENIX ;login:", "https://www.usenix.org/publications/login/rss.xml"),
+    ],
+    "dblp": [
+        ("아티클", "DBLP", "https://news.google.com/rss/search?q=site:dblp.org+computer+science&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "pubmed": [
+        ("아티클", "PubMed", "https://news.google.com/rss/search?q=site:pubmed.ncbi.nlm.nih.gov&hl=en-US&gl=US&ceid=US:en"),
+        ("아티클", "PubMed clinical", "https://news.google.com/rss/search?q=PubMed+clinical+medicine+life+sciences&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "nejm": [
+        ("아티클", "NEJM", "https://www.nejm.org/action/showFeed?jc=nejm&type=etoc&feed=rss"),
+        ("아티클", "NEJM Google", "https://news.google.com/rss/search?q=site:nejm.org&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "the-lancet": [
+        ("아티클", "The Lancet", "https://www.thelancet.com/rssfeed/lancet_current.xml"),
+        ("아티클", "Lancet Google", "https://news.google.com/rss/search?q=site:thelancet.com&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "jama": [
+        ("아티클", "JAMA Network", "https://jamanetwork.com/rss/site_3/3.xml"),
+        ("아티클", "JAMA Google", "https://news.google.com/rss/search?q=site:jamanetwork.com+JAMA&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "cochrane": [
+        ("아티클", "Cochrane Library", "https://www.cochranelibrary.com/cdsr/reviews/rss.xml"),
+        ("아티클", "Cochrane Google", "https://news.google.com/rss/search?q=site:cochranelibrary.com+systematic+review&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "uptodate": [
+        ("아티클", "UpToDate", "https://news.google.com/rss/search?q=site:uptodate.com+clinical&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "ieee-xplore-semi": [
+        ("아티클", "IEEE SSCS", "https://news.google.com/rss/search?q=IEEE+solid-state+circuits+SSCS&hl=en-US&gl=US&ceid=US:en"),
+        ("아티클", "IEEE EDS", "https://news.google.com/rss/search?q=IEEE+electron+devices+EDS+semiconductor&hl=en-US&gl=US&ceid=US:en"),
+        ("아티클", "IEEE Xplore semi", "https://news.google.com/rss/search?q=site:ieeexplore.ieee.org+semiconductor+solid-state&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "isscc": [
+        ("아티클", "ISSCC", "https://news.google.com/rss/search?q=ISSCC+solid-state+circuits+conference&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "iedm": [
+        ("아티클", "IEDM", "https://news.google.com/rss/search?q=IEDM+electron+devices+meeting+transistor&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "spie": [
+        ("아티클", "SPIE", "https://www.spiedigitallibrary.org/rss/journals.xml"),
+        ("아티클", "SPIE lithography", "https://news.google.com/rss/search?q=site:spiedigitallibrary.org+EUV+lithography&hl=en-US&gl=US&ceid=US:en"),
+    ],
+    "sciencedirect": [
+        ("아티클", "ScienceDirect", "https://news.google.com/rss/search?q=site:sciencedirect.com+solid-state+electronics+semiconductor&hl=en-US&gl=US&ceid=US:en"),
+        ("아티클", "Elsevier materials", "https://news.google.com/rss/search?q=Elsevier+semiconductor+materials+engineering&hl=en-US&gl=US&ceid=US:en"),
+    ],
 }
 
 # Sites without reliable native RSS (or as secondary fallback): public HTML lists/search
@@ -689,6 +751,16 @@ _SITE_HTML: dict[str, list[HtmlListSpec]] = {
             url="https://www.quantstart.com/articles/",
             href_re=r"quantstart\.com/articles/.+",
             base="https://www.quantstart.com/",
+            limit=6,
+        ),
+    ],
+    "dblp": [
+        HtmlListSpec(
+            kind="아티클",
+            source="DBLP search",
+            url="https://dblp.org/search?q={q}",
+            href_re=r"dblp\.org/rec/.+",
+            base="https://dblp.org/",
             limit=6,
         ),
     ],

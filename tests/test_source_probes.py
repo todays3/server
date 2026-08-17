@@ -51,6 +51,7 @@ HTML_FIXTURES: dict[str, str] = {
     "itchosun": '<html><body><a href="https://it.chosun.com/news/article.html">IT Chosun daily news</a></body></html>',
     "clien": '<html><body><a href="/service/board/news/1888123">Clien news title here</a></body></html>',
     "quantstart": '<html><body><a href="https://www.quantstart.com/articles/algo-intro">Algo trading intro</a></body></html>',
+    "dblp": '<html><body><a href="https://dblp.org/rec/conf/usenix/example2026.html">USENIX Example Paper Title Here</a></body></html>',
 }
 
 

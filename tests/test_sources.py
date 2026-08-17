@@ -53,6 +53,20 @@ def test_catalog_includes_design_and_kr_tech_sites():
         "mobbin",
     ):
         assert sid in ids
+    for sid in (
+        "pubmed",
+        "nejm",
+        "arxiv-cs",
+        "acm-dl",
+        "ieee-xplore",
+        "usenix",
+        "dblp",
+        "isscc",
+        "iedm",
+        "spie",
+        "sciencedirect",
+    ):
+        assert sid in ids
     labels = {g["id"]: g["label"] for g in catalog_payload()["groups"]}
     assert "design" in labels
     assert any("디자인" in g["match"] for g in catalog_payload()["groups"] if g["id"] == "design")
@@ -65,6 +79,9 @@ def test_catalog_payload_shape():
     assert "반도체" in payload["mega_map"]
     assert "의학" in payload["mega_map"]
     assert "design" in payload["mega_map"]["IT"]
+    assert "cs-academic" in payload["mega_map"]["IT"]
+    assert "medicine-clinical" in payload["mega_map"]["의학"]
+    assert "semi-academic" in payload["mega_map"]["반도체"]
     assert all("sites" in g for g in payload["groups"])
 
 

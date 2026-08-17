@@ -70,6 +70,22 @@ SITE_WHY: dict[str, str] = {
     "wanted": "원티드 커리어글",
     "rocketpunch": "로켓펀치 채용·회사",
     "naver-news": "네이버뉴스 헤드라인",
+    "arxiv-cs": "arXiv CS 프리프린트",
+    "acm-dl": "ACM 학술 DB",
+    "ieee-xplore": "IEEE Xplore 논문",
+    "usenix": "USENIX 학회",
+    "dblp": "DBLP 서지 정보",
+    "pubmed": "PubMed 논문",
+    "nejm": "NEJM 최신 논문",
+    "the-lancet": "The Lancet 헤드라인",
+    "jama": "JAMA Network",
+    "cochrane": "Cochrane 고찰",
+    "uptodate": "UpToDate 임상 요약",
+    "ieee-xplore-semi": "IEEE SSCS·EDS",
+    "isscc": "ISSCC 학회",
+    "iedm": "IEDM 학회",
+    "spie": "SPIE 광학·리소",
+    "sciencedirect": "ScienceDirect 저널",
 }
 
 

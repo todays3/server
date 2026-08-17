@@ -177,6 +177,10 @@ def test_robots_allows_fail_open(monkeypatch):
 
 
 def test_sources_html_and_gather(monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    now = datetime(2026, 8, 17, 12, 0, tzinfo=ZoneInfo("Asia/Seoul"))
     spec = HtmlListSpec(
         kind="아티클",
         source="t",
@@ -186,21 +190,21 @@ def test_sources_html_and_gather(monkeypatch):
         limit=3,
     )
     html = """
-    <a href="/p/one">Good Title Here</a>
-    <a href="/p/one">Good Title Here</a>
+    <a href="/p/2026/08/17/one">Good Title Here</a>
+    <a href="/p/2026/08/17/one">Good Title Here</a>
     <a href="/about">Home</a>
     <a href="/p/x">ab</a>
     <a href="https://github.com/topics/python">Skip Github Topics</a>
     <a href="https://github.com/foo/bar">Repo Name Here</a>
     """
-    items = _parse_html_list(spec, query="주식", body=html)
+    items = _parse_html_list(spec, query="주식", body=html, now=now)
     assert items
     assert _parse_html_list(spec, body="") == []
     monkeypatch.setattr("app.services.sources._http_get", lambda *_a, **_k: None)
     assert _parse_html_list(spec, body=None) == []
 
     gh = HtmlListSpec(
-        kind="아티클",
+        kind="커뮤니티",
         source="gh",
         url="https://github.com/trending",
         href_re=r"github\.com/.+",

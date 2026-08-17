@@ -269,6 +269,123 @@ _GROUPS: list[tuple[str, str, list[str], list[tuple[str, str, str, str]]]] = [
         ],
     ),
     (
+        "cs-academic",
+        "컴퓨터 공학 · 시스템",
+        ["개발", "CS", "arXiv", "ACM", "IEEE", "분산", "아키텍처", "암호", "운영체제"],
+        [
+            (
+                "arxiv-cs",
+                "arXiv (Computer Science)",
+                "코넬 대학교가 운영하는 CS 프리프린트 저장소. AI·분산 시스템·암호학 등 최신 논문이 가장 먼저 공유됩니다.",
+                "https://arxiv.org/list/cs/recent",
+            ),
+            (
+                "acm-dl",
+                "ACM Digital Library",
+                "ACM 학회의 논문·저널·학술대회 자료를 통합 제공하는 컴퓨터 과학 분야 핵심 학술 DB입니다.",
+                "https://dl.acm.org/",
+            ),
+            (
+                "ieee-xplore",
+                "IEEE Xplore",
+                "소프트웨어 공학·컴퓨터 아키텍처·네트워크 분야 IEEE·IET 학술 자료 통합 검색 플랫폼입니다.",
+                "https://ieeexplore.ieee.org/",
+            ),
+            (
+                "usenix",
+                "USENIX",
+                "운영체제·커널·분산 시스템·보안 등 시스템 엔지니어링 실무와 밀접한 USENIX 학회 논문·발표 자료입니다.",
+                "https://www.usenix.org/",
+            ),
+            (
+                "dblp",
+                "DBLP",
+                "컴퓨터 과학 문헌·서지 정보 애그리게이터. 저자·학회별 연구 이력 추적에 최적화되어 있습니다.",
+                "https://dblp.org/",
+            ),
+        ],
+    ),
+    (
+        "medicine-clinical",
+        "임상 의학 · 생명과학",
+        ["의학", "임상", "생명과학", "PubMed", "NEJM", "Lancet", "JAMA", "Cochrane"],
+        [
+            (
+                "pubmed",
+                "PubMed (NCBI)",
+                "미국 국립의학도서관(NLM)이 운영하는 전 세계 의·생명과학 논문 검색의 범용 표준 DB입니다.",
+                "https://pubmed.ncbi.nlm.nih.gov/",
+            ),
+            (
+                "nejm",
+                "NEJM",
+                "The New England Journal of Medicine. 임상 의학 분야에서 IF가 가장 높은 최고 권위 저널입니다.",
+                "https://www.nejm.org/",
+            ),
+            (
+                "the-lancet",
+                "The Lancet",
+                "영국 발행 세계 최고 수준 의학 저널. 글로벌 보건·대규모 임상 시험 결과를 주도합니다.",
+                "https://www.thelancet.com/",
+            ),
+            (
+                "jama",
+                "JAMA",
+                "미국 의학회(American Medical Association) 공식 저널. 임상 실무·의료 정책에 큰 영향을 미칩니다.",
+                "https://jamanetwork.com/journals/jama",
+            ),
+            (
+                "cochrane",
+                "Cochrane Library",
+                "근거 중심 의학(EBM)을 위한 체계적 문헌 고찰·메타 분석 결과를 제공합니다.",
+                "https://www.cochranelibrary.com/",
+            ),
+            (
+                "uptodate",
+                "UpToDate",
+                "개별 논문 검색 사이트는 아니나, 최신 학술 근거를 바탕으로 전문가가 작성한 실무 임상 의사결정 지원 플랫폼입니다.",
+                "https://www.uptodate.com/",
+            ),
+        ],
+    ),
+    (
+        "semi-academic",
+        "반도체 · 전자공학",
+        ["반도체", "ISSCC", "IEDM", "소자", "공정", "회로", "EUV", "트랜지스터"],
+        [
+            (
+                "ieee-xplore-semi",
+                "IEEE Xplore (SSCS · EDS)",
+                "반도체 핵심 학회 SSCS·EDS 저널·학술대회 논문을 포괄하는 IEEE Xplore 반도체 코퍼스입니다.",
+                "https://ieeexplore.ieee.org/xpl/RecentIssue.jsp?punumber=4",
+            ),
+            (
+                "isscc",
+                "ISSCC",
+                "International Solid-State Circuits Conference. 반도체 회로 설계 분야 최고 권위 학회입니다.",
+                "https://www.isscc.org/",
+            ),
+            (
+                "iedm",
+                "IEDM",
+                "International Electron Devices Meeting. GAA·CFET 등 차세대 트랜지스터·초미세 공정 소자 기술 학회입니다.",
+                "https://www.ieee-iedm.org/",
+            ),
+            (
+                "spie",
+                "SPIE Digital Library",
+                "EUV 등 초미세 공정에 필수적인 광학·포토닉스·리소그래피 기술 논문을 제공합니다.",
+                "https://www.spiedigitallibrary.org/",
+            ),
+            (
+                "sciencedirect",
+                "ScienceDirect (Elsevier)",
+                "Solid-State Electronics 등 반도체 소재·기초 물리 관련 Elsevier 학술 저널 통합 검색 플랫폼입니다.",
+                "https://www.sciencedirect.com/",
+            ),
+        ],
+    ),
+    (
         "kr-it",
         "국내 IT · 애그리게이터",
         ["IT", "개발", "뉴스", "스타트업", "하드웨어", "반도체"],
@@ -419,14 +536,14 @@ _GROUPS: list[tuple[str, str, list[str], list[tuple[str, str, str, str]]]] = [
 ]
 
 MEGA_TO_GROUPS: dict[str, list[str]] = {
-    "IT": ["it", "arch", "kr-it", "design"],
+    "IT": ["it", "arch", "kr-it", "design", "cs-academic"],
     "경제": ["stock-kr", "stock-us", "crypto", "quant"],
     "연애": ["life"],
     "라이프": ["life"],
     "커리어": ["career-news"],
     "뉴스": ["career-news", "kr-it"],
-    "반도체": ["kr-it", "stock-kr"],
-    "의학": ["kr-it", "career-news"],
+    "반도체": ["kr-it", "stock-kr", "semi-academic"],
+    "의학": ["medicine-clinical", "kr-it"],
 }
 
 
