@@ -84,3 +84,22 @@ async def test_update_prefs_legacy_hour_minute(client: AsyncClient, db_session):
     assert res.status_code == 200
     assert res.json()["send_hour"] == 9
     assert res.json()["send_minute"] == 15
+
+
+@pytest.mark.asyncio
+async def test_update_prefs_rejects_four_send_times(client: AsyncClient, db_session):
+    headers = _auth(db_session)
+    await client.get("/api/v1/prefs", headers=headers)
+    res = await client.put(
+        "/api/v1/prefs",
+        headers=headers,
+        json={
+            "send_times": [
+                {"hour": 7, "minute": 0},
+                {"hour": 9, "minute": 0},
+                {"hour": 12, "minute": 0},
+                {"hour": 18, "minute": 0},
+            ]
+        },
+    )
+    assert res.status_code == 422

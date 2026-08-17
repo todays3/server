@@ -8,6 +8,8 @@ from app.db import get_db
 from app.models import Preference, User
 from app.schemas import PreferenceOut, PreferenceUpdate, RoleSettingsOut, SendTimeSlot
 from app.services.roles import encode_role_settings, encode_roles, parse_role_settings, parse_roles
+
+MAX_ASSISTANTS_PER_USER = 2
 from app.services.send_times import encode_send_times, normalize_slots, parse_send_times_raw
 
 router = APIRouter(prefix="/prefs", tags=["prefs"])
@@ -72,7 +74,13 @@ def update_prefs(
             raise HTTPException(status_code=400, detail="관심 주제를 하나 이상 선택하세요")
         pref.topics = ",".join(topics)
     if "roles" in data and data["roles"] is not None:
-        pref.roles = encode_roles(data.pop("roles"))
+        roles = data.pop("roles")
+        if not user.is_admin and len(roles) > MAX_ASSISTANTS_PER_USER:
+            raise HTTPException(
+                status_code=400,
+                detail=f"어시스턴트는 최대 {MAX_ASSISTANTS_PER_USER}명까지 선택할 수 있습니다",
+            )
+        pref.roles = encode_roles(roles)
     role_settings = data.pop("role_settings", None)
     if role_settings is not None:
         pref.role_settings = encode_role_settings(dict(role_settings))

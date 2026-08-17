@@ -5,7 +5,7 @@ from __future__ import annotations
 from app.schemas import SendTimeSlot
 
 DEFAULT_SEND_TIMES = "07:30"
-MAX_SEND_TIMES = 5
+MAX_SEND_TIMES = 3
 
 
 def format_hm(hour: int, minute: int) -> str:

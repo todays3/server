@@ -20,6 +20,11 @@ def test_normalize_sorts_and_dedupes():
     assert encode_send_times(slots) == "07:30,12:00,18:00"
 
 
+def test_normalize_keeps_at_most_three_slots():
+    slots = normalize_slots([SendTimeSlot(hour=h, minute=0) for h in (7, 9, 12, 18)])
+    assert encode_send_times(slots) == "07:00,09:00,12:00"
+
+
 def test_parse_drops_junk_and_empty_normalizes_to_default():
     slots = parse_send_times_raw("nope,25:00,07:xx,08:15", hour=7, minute=30)
     assert slots == [SendTimeSlot(hour=8, minute=15)]

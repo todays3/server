@@ -27,7 +27,13 @@ def test_preference_update_rejects_empty_send_times():
 
 def test_preference_update_rejects_too_many_send_times():
     with pytest.raises(Exception):
-        PreferenceUpdate(send_times=[SendTimeSlot(hour=1, minute=0)] * 6)
+        PreferenceUpdate(send_times=[SendTimeSlot(hour=h, minute=0) for h in (7, 9, 12, 18)])
+
+
+def test_preference_update_accepts_three_send_times():
+    payload = PreferenceUpdate(send_times=[SendTimeSlot(hour=h, minute=0) for h in (7, 12, 18)])
+    assert payload.send_times is not None
+    assert len(payload.send_times) == 3
 
 
 def test_preference_update_empty_keeps_optional_none():
