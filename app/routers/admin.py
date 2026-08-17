@@ -1,3 +1,4 @@
+from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from typing import Annotated
 import json
@@ -10,7 +11,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.auth import get_admin_user
 from app.config import get_settings
 from app.db import get_db
-from app.models import CrawlRun, LlmUsage, Preference, StickyNote, User
+from app.models import CrawlRun, Digest, LlmUsage, Preference, StickyNote, User
 from app.schemas import (
     AdminDailyPoint,
     AdminDigestPreviewOut,
@@ -19,9 +20,15 @@ from app.schemas import (
     AdminKakaoTestSendRequest,
     AdminOverview,
     AdminPrefDetail,
+    AdminSendScheduleStats,
+    AdminSendSlotBucket,
+    AdminSendSlotCountBucket,
+    AdminRecentCallList,
     AdminStatusUpdate,
     AdminUpdateIn,
     AdminUpdateOut,
+    StickyNoteOut,
+    StickyNotePatch,
     AdminUsageEvent,
     AdminUsageSummary,
     AdminUserDetail,
@@ -53,6 +60,7 @@ from app.services.fcm import (
     notify_digest_sent,
     total_device_count,
 )
+from app.services.note_wall import serialize_one
 from app.services.pipeline_timing import (
     LAYER_KEYS,
     percentile,
@@ -62,7 +70,7 @@ from app.services.pipeline_timing import (
     timings_from,
     total_ms,
 )
-from app.services.send_times import parse_send_times_raw
+from app.services.send_times import MAX_SEND_TIMES, format_hm, parse_send_times_raw
 from app.services.source_probe import bot_risk_counts, list_probe_snapshot, probe_all_sites, probe_site, summarize
 from app.services.sources import collector_site_ids
 
@@ -88,6 +96,80 @@ def _today_start_utc() -> datetime:
 
 def _aware(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _delivery_status(usage: LlmUsage, digest: Digest | None) -> str:
+    if digest is not None:
+        return digest.status
+    if not usage.success:
+        return "failed"
+    return ""
+
+
+def _match_digests_for_usages(db: Session, usages: list[LlmUsage]) -> dict[int, Digest]:
+    if not usages:
+        return {}
+    user_ids = {row.user_id for row in usages}
+    times = [_aware(row.created_at) for row in usages if row.created_at]
+    if not times:
+        return {}
+    t_min = min(times) - timedelta(seconds=30)
+    t_max = max(times) + timedelta(minutes=45)
+    digests = list(
+        db.scalars(
+            select(Digest)
+            .where(
+                Digest.user_id.in_(user_ids),
+                Digest.created_at >= t_min,
+                Digest.created_at <= t_max,
+            )
+            .order_by(Digest.created_at.asc())
+        ).all()
+    )
+    used: set[int] = set()
+    matched: dict[int, Digest] = {}
+    for usage in sorted(usages, key=lambda row: _aware(row.created_at)):
+        u_t = _aware(usage.created_at)
+        for digest in digests:
+            if digest.id in used or digest.user_id != usage.user_id:
+                continue
+            d_t = _aware(digest.created_at)
+            if d_t < u_t - timedelta(seconds=30) or d_t > u_t + timedelta(minutes=45):
+                continue
+            used.add(digest.id)
+            matched[usage.id] = digest
+            break
+    return matched
+
+
+def _usage_events(db: Session, rows: list[LlmUsage]) -> list[AdminUsageEvent]:
+    user_map = {
+        u.id: u
+        for u in db.scalars(select(User).where(User.id.in_([r.user_id for r in rows] or [0]))).all()
+    }
+    digest_map = _match_digests_for_usages(db, rows)
+    events: list[AdminUsageEvent] = []
+    for row in rows:
+        digest = digest_map.get(row.id)
+        events.append(
+            AdminUsageEvent(
+                id=row.id,
+                user_id=row.user_id,
+                email=user_map[row.user_id].email if row.user_id in user_map else "",
+                purpose=row.purpose,
+                provider=row.provider,
+                model=row.model,
+                prompt_tokens=row.prompt_tokens,
+                completion_tokens=row.completion_tokens,
+                total_tokens=row.total_tokens,
+                success=row.success,
+                delivery_status=_delivery_status(row, digest),
+                attempt_count=int(digest.attempt_count or 0) if digest else 0,
+                error_message=(digest.error_message if digest and digest.error_message else row.error_message),
+                created_at=row.created_at,
+            )
+        )
+    return events
 
 
 def _seoul_day(dt: datetime) -> date:
@@ -216,6 +298,35 @@ def _pref_detail(pref: Preference | None) -> AdminPrefDetail | None:
     )
 
 
+def _send_schedule_stats(prefs: list[Preference]) -> AdminSendScheduleStats:
+    time_counts: Counter[tuple[int, int]] = Counter()
+    slot_n_counts: Counter[int] = Counter()
+    enabled = 0
+    disabled = 0
+    for pref in prefs:
+        slots = parse_send_times_raw(pref.send_times, hour=pref.send_hour, minute=pref.send_minute)
+        if pref.enabled:
+            enabled += 1
+        else:
+            disabled += 1
+        slot_n_counts[len(slots)] += 1
+        for slot in slots:
+            time_counts[(slot.hour, slot.minute)] += 1
+    return AdminSendScheduleStats(
+        users_with_prefs=len(prefs),
+        enabled=enabled,
+        disabled=disabled,
+        times=[
+            AdminSendSlotBucket(label=format_hm(hour, minute), hour=hour, minute=minute, count=count)
+            for (hour, minute), count in sorted(time_counts.items())
+        ],
+        slot_counts=[
+            AdminSendSlotCountBucket(slots=n, count=slot_n_counts[n])
+            for n in range(1, MAX_SEND_TIMES + 1)
+        ],
+    )
+
+
 @router.get("/overview", response_model=AdminOverview)
 def admin_overview(
     admin: Annotated[User, Depends(get_admin_user)],
@@ -239,27 +350,7 @@ def admin_overview(
     recent_rows = list(
         db.scalars(select(LlmUsage).order_by(LlmUsage.created_at.desc()).limit(30)).all()
     )
-    user_map = {
-        u.id: u
-        for u in db.scalars(select(User).where(User.id.in_([r.user_id for r in recent_rows] or [0]))).all()
-    }
-    recent = [
-        AdminUsageEvent(
-            id=r.id,
-            user_id=r.user_id,
-            email=user_map[r.user_id].email if r.user_id in user_map else "",
-            purpose=r.purpose,
-            provider=r.provider,
-            model=r.model,
-            prompt_tokens=r.prompt_tokens,
-            completion_tokens=r.completion_tokens,
-            total_tokens=r.total_tokens,
-            success=r.success,
-            error_message=r.error_message,
-            created_at=r.created_at,
-        )
-        for r in recent_rows
-    ]
+    recent = _usage_events(db, recent_rows)
 
     last = db.scalar(select(CrawlRun).order_by(CrawlRun.created_at.desc()).limit(1))
     cpu_max = db.scalar(select(func.max(CrawlRun.cpu_peak_percent))) or 0
@@ -281,6 +372,30 @@ def admin_overview(
         last_run_rss_delta_bytes=int(last.rss_delta_bytes or 0) if last else 0,
         runs_cpu_peak_max_percent=int(cpu_max),
         runs_rss_peak_max_bytes=int(rss_max),
+        send_schedule=_send_schedule_stats(list(db.scalars(select(Preference)).all())),
+    )
+
+
+@router.get("/recent-calls", response_model=AdminRecentCallList)
+def list_recent_calls(
+    admin: Annotated[User, Depends(get_admin_user)],
+    db: Annotated[Session, Depends(get_db)],
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=50)] = 10,
+) -> AdminRecentCallList:
+    _ = admin
+    total = db.scalar(select(func.count()).select_from(LlmUsage)) or 0
+    offset = (page - 1) * page_size
+    rows = list(
+        db.scalars(
+            select(LlmUsage).order_by(LlmUsage.created_at.desc()).offset(offset).limit(page_size)
+        ).all()
+    )
+    return AdminRecentCallList(
+        items=_usage_events(db, rows),
+        total=int(total),
+        page=page,
+        page_size=page_size,
     )
 
 
@@ -568,7 +683,7 @@ async def kakao_test_send(
         if not connected:
             kakao_error = "카카오 나에게 보내기가 연결되지 않았습니다"
         else:
-            kakao_ok, kakao_error = await send_digest_via_kakao(user, payload.title, payload.body, db=db)
+            kakao_ok, kakao_error, _chunks = await send_digest_via_kakao(user, payload.title, payload.body, db=db)
             db.commit()
 
     push_devices = device_count(db, user.id)
@@ -605,6 +720,39 @@ async def kakao_test_send(
         push_sent=push_sent,
         push_error=push_error,
     )
+
+
+@router.patch("/notes/{note_id}", response_model=StickyNoteOut)
+def update_note(
+    note_id: int,
+    payload: StickyNotePatch,
+    admin: Annotated[User, Depends(get_admin_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> StickyNoteOut:
+    note = db.get(StickyNote, note_id)
+    if note is None:
+        raise HTTPException(status_code=404, detail="쪽지를 찾을 수 없습니다")
+    max_len = 800 if note.kind == "update" else 400
+    if len(payload.body) > max_len:
+        raise HTTPException(status_code=422, detail=f"본문은 {max_len}자까지입니다")
+    note.body = payload.body
+    db.add(note)
+    db.commit()
+    db.refresh(note)
+    return serialize_one(db, admin, note)
+
+
+@router.delete("/notes/{note_id}", status_code=204)
+def delete_note(
+    note_id: int,
+    admin: Annotated[User, Depends(get_admin_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> None:
+    note = db.get(StickyNote, note_id)
+    if note is None:
+        raise HTTPException(status_code=404, detail="쪽지를 찾을 수 없습니다")
+    db.delete(note)
+    db.commit()
 
 
 @router.post("/updates", response_model=AdminUpdateOut)
@@ -733,6 +881,7 @@ def list_latency(
                 label=_LAYER_LABELS[key],
                 p50_ms=percentile(samples, 50),
                 p90_ms=percentile(samples, 90),
+                p95_ms=percentile(samples, 95),
                 mean_ms=mean,
             )
         )

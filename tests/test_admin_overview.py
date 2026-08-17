@@ -11,7 +11,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.auth import create_access_token, hash_password
 from app.models import CrawlRun, LlmUsage, Preference, User
-from app.routers.admin import _daily_series, _pref_detail
+from app.routers.admin import _daily_series, _pref_detail, _send_schedule_stats
 
 
 @pytest.fixture()
@@ -90,6 +90,13 @@ async def test_admin_overview_includes_series(client: AsyncClient, db_session):
     assert body["last_run_rss_delta_bytes"] == 20971520
     assert body["runs_cpu_peak_max_percent"] == 45
     assert body["runs_rss_peak_max_bytes"] == 104857600
+    sched = body["send_schedule"]
+    assert sched["enabled"] == 1
+    assert sched["disabled"] == 0
+    assert sched["times"][0]["label"] == "07:30"
+    assert sched["times"][0]["count"] == 1
+    assert sched["slot_counts"][0]["slots"] == 1
+    assert sched["slot_counts"][0]["count"] == 1
 
 
 def test_daily_series_filters_out_of_window_and_pref_detail_none():
@@ -128,3 +135,20 @@ def test_daily_series_filters_out_of_window_and_pref_detail_none():
     detail = _pref_detail(pref)
     assert detail is not None
     assert detail.topics == ["a", "b"]
+
+
+def test_send_schedule_stats_buckets_times_enabled_and_slot_counts():
+    prefs = [
+        SimpleNamespace(send_times="07:30,18:00", send_hour=7, send_minute=30, enabled=True),
+        SimpleNamespace(send_times="07:30", send_hour=7, send_minute=30, enabled=False),
+    ]
+    stats = _send_schedule_stats(prefs)
+    assert stats.users_with_prefs == 2
+    assert stats.enabled == 1
+    assert stats.disabled == 1
+    by_time = {row.label: row.count for row in stats.times}
+    assert by_time["07:30"] == 2
+    assert by_time["18:00"] == 1
+    by_slots = {row.slots: row.count for row in stats.slot_counts}
+    assert by_slots[1] == 1
+    assert by_slots[2] == 1

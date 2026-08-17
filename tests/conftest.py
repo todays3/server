@@ -36,6 +36,10 @@ def _roomy_rate_limits(monkeypatch):
     monkeypatch.setenv("RATE_LIMIT_AUTH_MAX", "10000")
     monkeypatch.setenv("RATE_LIMIT_HOOKS_MAX", "10000")
     monkeypatch.setenv("RATE_LIMIT_NOTES_MAX", "10000")
+    monkeypatch.setenv("RATE_LIMIT_NOTE_HEARTS_MAX", "10000")
+    monkeypatch.setenv("NOTES_DAILY_MAX", "10000")
+    monkeypatch.setenv("NOTES_MIN_INTERVAL_SECONDS", "0")
+    monkeypatch.setenv("NOTES_MAX_OPEN", "10000")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()

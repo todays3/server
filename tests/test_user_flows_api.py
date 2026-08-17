@@ -322,7 +322,7 @@ async def test_digests_list_and_preview(client: AsyncClient, db_session, monkeyp
     monkeypatch.setattr("app.services.digest.gather_candidates", lambda *a, **k: items)
 
     async def send_ok(*_a, **_k):
-        return True, ""
+        return True, "", 1
 
     monkeypatch.setattr("app.services.delivery.send_digest_via_kakao", send_ok)
 
@@ -349,7 +349,7 @@ async def test_digests_list_and_preview(client: AsyncClient, db_session, monkeyp
     assert done["digest"]["status"] == "sent"
 
     async def send_fail(*_a, **_k):
-        return False, "insufficient scopes."
+        return False, "insufficient scopes.", 0
 
     monkeypatch.setattr("app.services.delivery.send_digest_via_kakao", send_fail)
     failed = await client.post(
@@ -362,6 +362,67 @@ async def test_digests_list_and_preview(client: AsyncClient, db_session, monkeyp
     err = next(row for row in fail_events if row.get("type") == "error")
     assert err["step"] == "send"
     assert "insufficient" in err["message"]
+
+
+@pytest.mark.asyncio
+async def test_test_send_uses_dummy_content_and_real_kakao(client: AsyncClient, db_session, monkeypatch):
+    member = _user(db_session, "user@example.com")
+    headers = _bearer(member)
+
+    def fail_gather(*_a, **_k):
+        raise AssertionError("gather_candidates should not run for test-send")
+
+    monkeypatch.setattr("app.services.digest.gather_candidates", fail_gather)
+
+    async def send_ok(*_a, **_k):
+        return True, "", 1
+
+    monkeypatch.setattr("app.services.delivery.send_digest_via_kakao", send_ok)
+
+    plain = await client.post("/api/v1/digests/test-send", headers=headers, json={})
+    assert plain.status_code == 200
+    body = plain.json()
+    assert body["status"] == "sent"
+    assert body["items"]
+    assert "(본 내용은 테스트용 데이터입니다.)" in body["body"]
+    assert "첫째." in body["body"]
+    assert "선정이유:" in body["body"]
+
+    streamed = await client.post(
+        "/api/v1/digests/test-send",
+        headers={**headers, "Accept": "application/x-ndjson"},
+        json={},
+    )
+    assert streamed.status_code == 200
+    events = [json.loads(line) for line in streamed.text.strip().split("\n") if line.strip()]
+    steps = [row["step"] for row in events if row.get("type") == "step"]
+    assert steps == ["crawl", "curate", "format", "send"]
+    done = next(row for row in events if row.get("type") == "done")
+    assert done["digest"]["status"] == "sent"
+
+
+@pytest.mark.asyncio
+async def test_resend_failed_digest(client: AsyncClient, db_session, monkeypatch):
+    member = _user(db_session, "user@example.com")
+    headers = _bearer(member)
+    digest = Digest(user_id=member.id, title="실패 브리프", body="본문", status="failed", error_message="boom")
+    db_session.add(digest)
+    db_session.commit()
+    db_session.refresh(digest)
+
+    calls = {"n": 0}
+
+    async def send_ok(*_a, **_k):
+        calls["n"] += 1
+        return True, "", 1
+
+    monkeypatch.setattr("app.services.delivery.send_digest_via_kakao", send_ok)
+    res = await client.post(f"/api/v1/digests/{digest.id}/resend", headers=headers)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "sent"
+    assert data["can_resend"] is False
+    assert calls["n"] == 1
 
 
 @pytest.mark.asyncio
@@ -386,10 +447,10 @@ async def test_preview_stream_send_does_not_lazy_load_detached_user(
     ]
     monkeypatch.setattr("app.services.digest.gather_candidates", lambda *a, **k: items)
 
-    async def memo_ok(*_a, **_k):
-        return [{}]
+    async def send_ok(*_a, **_k):
+        return True, "", 1
 
-    monkeypatch.setattr("app.services.kakao.send_memo_to_me", memo_ok)
+    monkeypatch.setattr("app.services.delivery.send_digest_via_kakao", send_ok)
     monkeypatch.setenv("KAKAO_REST_API_KEY", "test-key")
     get_settings.cache_clear()
     try:

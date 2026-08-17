@@ -89,6 +89,10 @@ async def test_list_latency(client: AsyncClient, db_session):
     assert body["lead_seconds"] >= 20
     ids = [layer["id"] for layer in body["layers"]]
     assert ids == ["trigger", "crawl", "aggregation", "llm", "format", "wait", "send"]
+    crawl = next(layer for layer in body["layers"] if layer["id"] == "crawl")
+    assert crawl["p50_ms"] == 4000
+    assert crawl["p90_ms"] == 4000
+    assert crawl["p95_ms"] == 4000
     row = body["runs"][0]
     assert row["layers"]["crawl"] == 4000
     assert row["layers"]["llm"] == 1800
