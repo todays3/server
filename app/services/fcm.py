@@ -21,11 +21,36 @@ SendOne = Callable[[str, str, str], str]
 UPDATE_PUSH_TITLE = "하루만장"
 UPDATE_PUSH_BODY = "업데이트 소식이 있습니다"
 UPDATE_PUSH_URL = "/app/notes"
+DIGEST_PUSH_URL = "kakaotalk://"
+OPEN_KAKAO_PATH = "/open-kakao"
 UPDATE_NOTE_KIND = "update"
 SUGGESTION_NOTE_KIND = "suggestion"
 UPDATE_NOTE_NICKNAME = "하루만장"
 
 _token_cache: tuple[str, float] | None = None
+
+
+def is_external_app_url(url: str) -> bool:
+    text = (url or "").strip()
+    return text.startswith("kakaotalk:") or text.startswith("intent:")
+
+
+def normalize_data_url(url: str) -> str:
+    text = (url or "").strip() or "/app"
+    if is_external_app_url(text) or text.startswith("http://") or text.startswith("https://"):
+        return text
+    return text if text.startswith("/") else f"/{text}"
+
+
+def webpush_click_link(url: str, origin: str) -> str:
+    """HTTPS link FCM may open. Custom schemes fall back to the in-app Kakao launch page."""
+    data_url = normalize_data_url(url)
+    base = origin.rstrip("/")
+    if is_external_app_url(data_url):
+        return f"{base}{OPEN_KAKAO_PATH}"
+    if data_url.startswith("http://") or data_url.startswith("https://"):
+        return data_url
+    return f"{base}{data_url}"
 
 FCM_SW_STUB = """/* todays3 fcm */
 self.addEventListener('install', () => self.skipWaiting());
@@ -84,10 +109,26 @@ def firebase_messaging_sw_source() -> str:
         "    data: data,\n"
         "  });\n"
         "});\n"
+        f"const APP_ORIGIN = {json.dumps(get_settings().frontend_origin.rstrip('/'))};\n"
+        "function clickTarget(url) {\n"
+        "  if (!url) return APP_ORIGIN + '/app';\n"
+        "  if (url.indexOf('kakaotalk:') === 0 || url.indexOf('intent:') === 0) return url;\n"
+        "  if (url.indexOf('http://') === 0 || url.indexOf('https://') === 0) return url;\n"
+        "  return APP_ORIGIN + (url.charAt(0) === '/' ? url : '/' + url);\n"
+        "}\n"
         "self.addEventListener('notificationclick', (event) => {\n"
         "  event.notification.close();\n"
         "  const url = (event.notification.data && event.notification.data.url) || '/app';\n"
-        "  event.waitUntil(clients.openWindow(url));\n"
+        "  event.waitUntil((async () => {\n"
+        "    const target = clickTarget(url);\n"
+        "    try {\n"
+        "      const opened = await clients.openWindow(target);\n"
+        "      if (opened) return opened;\n"
+        "    } catch (err) {}\n"
+        "    if (target.indexOf('kakaotalk:') === 0 || target.indexOf('intent:') === 0) {\n"
+        "      return clients.openWindow(APP_ORIGIN + '/open-kakao');\n"
+        "    }\n"
+        "  })());\n"
         "});\n"
         "self.addEventListener('install', () => self.skipWaiting());\n"
     )
@@ -172,6 +213,27 @@ def prune_invalid_tokens(tokens: list[str], results: list[str]) -> list[str]:
     return [token for token, result in zip(tokens, results, strict=False) if result == "gone"]
 
 
+def notify_digest_missed(
+    db: Session,
+    user_id: int,
+    slot_label: str,
+    *,
+    send_one: SendOne | None = None,
+) -> int:
+    title = "하루만장 발송 실패"
+    body = f"{slot_label} 예약 발송을 완료하지 못했습니다. 앱에서 다시 보내기를 눌러 주세요."
+    devices = db.scalars(select(PushDevice).where(PushDevice.user_id == user_id)).all()
+    return _notify_devices(
+        db,
+        devices,
+        title,
+        body,
+        url="/app",
+        tag="todays3-digest-missed",
+        send_one=send_one,
+    )
+
+
 def notify_digest_sent(
     db: Session,
     user_id: int,
@@ -181,7 +243,7 @@ def notify_digest_sent(
     send_one: SendOne | None = None,
 ) -> int:
     devices = db.scalars(select(PushDevice).where(PushDevice.user_id == user_id)).all()
-    return _notify_devices(db, devices, title, body, url="/app", tag="todays3-digest", send_one=send_one)
+    return _notify_devices(db, devices, title, body, url=DIGEST_PUSH_URL, tag="todays3-digest", send_one=send_one)
 
 
 def notify_all_devices(
@@ -234,13 +296,13 @@ def fcm_web_message(
     """Data-only web payload. A `notification` block makes Chrome display once and
     the service worker display again."""
     settings = get_settings()
-    path = url if url.startswith("/") else f"/{url}"
+    data_url = normalize_data_url(url)
     return {
         "message": {
             "token": token,
-            "data": {"title": title, "body": body, "url": path, "tag": tag},
+            "data": {"title": title, "body": body, "url": data_url, "tag": tag},
             "webpush": {
-                "fcm_options": {"link": f"{settings.frontend_origin.rstrip('/')}{path}"},
+                "fcm_options": {"link": webpush_click_link(data_url, settings.frontend_origin)},
             },
         }
     }
@@ -261,6 +323,34 @@ def fcm_send_one(
         access = _google_access_token()
         url_fcm = f"https://fcm.googleapis.com/v1/projects/{settings.firebase_project_id}/messages:send"
         payload = fcm_web_message(token, title, body, url=url, tag=tag)
+        response = httpx.post(
+            url_fcm,
+            headers={"Authorization": f"Bearer {access}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=15.0,
+        )
+        if response.status_code == 200:
+            return "ok"
+        text = response.text or ""
+        if response.status_code in {400, 404} and ("UNREGISTERED" in text or "NOT_FOUND" in text):
+            return "gone"
+        return "error"
+    except Exception:
+        return "error"
+
+
+def probe_fcm_token(token: str) -> str:
+    """Validate a device token without delivering a notification."""
+    if not fcm_send_configured():
+        return "skip"
+    settings = get_settings()
+    try:
+        access = _google_access_token()
+        url_fcm = f"https://fcm.googleapis.com/v1/projects/{settings.firebase_project_id}/messages:send"
+        payload = {
+            "validate_only": True,
+            "message": fcm_web_message(token, "probe", "probe")["message"],
+        }
         response = httpx.post(
             url_fcm,
             headers={"Authorization": f"Bearer {access}", "Content-Type": "application/json"},

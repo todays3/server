@@ -80,7 +80,7 @@ async def test_tick_runs_two_users_in_parallel(tmp_path, monkeypatch):
     monkeypatch.setattr("app.services.digest.gather_candidates", counting_gather)
 
     async def send_ok(*_a, **_k):
-        return True, ""
+        return True, "", 1
 
     monkeypatch.setattr("app.services.delivery.send_digest_via_kakao", send_ok)
     sch._sent_slots.clear()
@@ -117,11 +117,11 @@ async def test_one_user_failure_does_not_block_the_other(tmp_path, monkeypatch):
     monkeypatch.setattr("app.services.shared_crawl.gather_candidates", lambda *a, **k: items)
     monkeypatch.setattr("app.services.digest.gather_candidates", lambda *a, **k: items)
 
-    async def send_maybe(user, title, body, db=None):
+    async def send_maybe(user, title, body, db=None, **_k):
         _ = (title, body, db)
         if user.email == "bad@example.com":
             raise RuntimeError("kakao down")
-        return True, ""
+        return True, "", 1
 
     monkeypatch.setattr("app.services.delivery.send_digest_via_kakao", send_maybe)
     sch._sent_slots.clear()
@@ -175,7 +175,7 @@ async def test_nearby_send_times_share_one_crawl(tmp_path, monkeypatch):
     monkeypatch.setattr("app.services.digest.gather_candidates", counting_gather)
 
     async def send_ok(*_a, **_k):
-        return True, ""
+        return True, "", 1
 
     monkeypatch.setattr("app.services.delivery.send_digest_via_kakao", send_ok)
     sch._sent_slots.clear()

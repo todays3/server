@@ -3,17 +3,21 @@
 from app.models import Digest, PushDevice, User
 from app.services.delivery import deliver_digest
 from app.services.fcm import (
+    DIGEST_PUSH_URL,
     MAX_DEVICES_PER_USER,
+    OPEN_KAKAO_PATH,
     UPDATE_PUSH_BODY,
     UPDATE_PUSH_TITLE,
     UPDATE_PUSH_URL,
     fcm_web_message,
     firebase_messaging_sw_source,
     notify_all_devices,
+    notify_digest_missed,
     notify_digest_sent,
     prune_invalid_tokens,
     register_push_device,
     unregister_push_device,
+    webpush_click_link,
 )
 
 
@@ -64,6 +68,59 @@ def test_fcm_web_message_is_data_only_so_chrome_does_not_auto_display():
     assert message["data"]["tag"] == "todays3-digest"
 
 
+def test_digest_push_click_opens_kakaotalk_with_https_fallback():
+    assert DIGEST_PUSH_URL == "kakaotalk://"
+    assert webpush_click_link(DIGEST_PUSH_URL, "https://oday.example") == "https://oday.example/open-kakao"
+    payload = fcm_web_message(
+        "device-token",
+        "하루만장 · 8/16",
+        "미리보기",
+        url=DIGEST_PUSH_URL,
+        tag="todays3-digest",
+    )
+    data = payload["message"]["data"]
+    assert data["url"] == "kakaotalk://"
+    assert payload["message"]["webpush"]["fcm_options"]["link"].endswith(OPEN_KAKAO_PATH)
+
+
+def test_notify_digest_sent_targets_kakaotalk(db_session, monkeypatch):
+    user = _user(db_session)
+    register_push_device(db_session, user.id, token="phone", platform="web", device_id="phone")
+    db_session.commit()
+    seen: dict[str, str] = {}
+
+    def fake_send(token: str, title: str, body: str, *, url: str = "/app", tag: str = "todays3-digest") -> str:
+        _ = (token, title, body)
+        seen["url"] = url
+        seen["tag"] = tag
+        return "ok"
+
+    monkeypatch.setattr("app.services.fcm.fcm_send_configured", lambda: True)
+    monkeypatch.setattr("app.services.fcm.fcm_send_one", fake_send)
+    notify_digest_sent(db_session, user.id, "하루만장", "본문")
+    assert seen["url"] == "kakaotalk://"
+    assert seen["tag"] == "todays3-digest"
+
+
+def test_missed_digest_push_stays_in_the_app(db_session, monkeypatch):
+    user = _user(db_session)
+    register_push_device(db_session, user.id, token="phone", platform="web", device_id="phone")
+    db_session.commit()
+    seen: dict[str, str] = {}
+
+    def fake_send(token: str, title: str, body: str, *, url: str = "/app", tag: str = "todays3-digest") -> str:
+        _ = (token, title, body)
+        seen["url"] = url
+        seen["tag"] = tag
+        return "ok"
+
+    monkeypatch.setattr("app.services.fcm.fcm_send_configured", lambda: True)
+    monkeypatch.setattr("app.services.fcm.fcm_send_one", fake_send)
+    notify_digest_missed(db_session, user.id, "07:30")
+    assert seen["url"] == "/app"
+    assert seen["tag"] == "todays3-digest-missed"
+
+
 def test_fcm_web_message_can_open_notes_for_update_news():
     payload = fcm_web_message(
         "device-token",
@@ -100,6 +157,10 @@ def test_fcm_sw_skips_show_when_fcm_already_displayed_notification(monkeypatch):
     assert "showNotification" in src
     assert "todays3-digest" in src
     assert "data.tag" in src
+    assert "kakaotalk:" in src
+    assert "/open-kakao" in src
+    assert "/app/notes" in src or "clickTarget" in src
+    assert "APP_ORIGIN" in src
 
 
 def test_notify_sends_once_per_device_even_when_kakao_body_is_long(db_session):
@@ -208,15 +269,15 @@ async def test_deliver_digest_pushes_only_after_kakao_ok(db_session, monkeypatch
     pushed: list[tuple[int, str]] = []
 
     async def kakao_ok(*_a, **_k):
-        return True, ""
+        return True, "", 1
 
     monkeypatch.setattr("app.services.delivery.send_digest_via_kakao", kakao_ok)
     monkeypatch.setattr(
         "app.services.delivery.notify_digest_sent",
         lambda db, user_id, title, body, **k: pushed.append((user_id, title)) or 1,
     )
-    ok, err = await deliver_digest(db_session, user, digest, wait_ms=0)
-    assert ok and err == ""
+    result = await deliver_digest(db_session, user, digest, wait_ms=0)
+    assert result.ok and result.error == ""
     assert pushed == [(user.id, "하루만장 · 8/16")]
 
 
@@ -228,14 +289,43 @@ async def test_deliver_digest_skips_push_when_kakao_fails(db_session, monkeypatc
     pushed: list[int] = []
 
     async def kakao_fail(*_a, **_k):
-        return False, "kakao down"
+        return False, "kakao down", 0
 
     monkeypatch.setattr("app.services.delivery.send_digest_via_kakao", kakao_fail)
     monkeypatch.setattr(
         "app.services.delivery.notify_digest_sent",
         lambda *_a, **_k: pushed.append(1) or 0,
     )
-    ok, err = await deliver_digest(db_session, user, digest, wait_ms=0)
-    assert not ok
-    assert "kakao" in err
+    result = await deliver_digest(db_session, user, digest, wait_ms=0)
+    assert not result.ok
+    assert "kakao" in result.error
     assert pushed == []
+
+
+def test_probe_fcm_token_skips_when_not_configured(monkeypatch):
+    monkeypatch.setattr("app.services.fcm.fcm_send_configured", lambda: False)
+    from app.services.fcm import probe_fcm_token
+
+    assert probe_fcm_token("device-token") == "skip"
+
+
+def test_probe_fcm_token_returns_gone_for_unregistered(monkeypatch):
+    monkeypatch.setattr("app.services.fcm.fcm_send_configured", lambda: True)
+    monkeypatch.setattr("app.services.fcm._google_access_token", lambda: "access")
+    monkeypatch.setattr(
+        "app.services.fcm.get_settings",
+        lambda: type(
+            "S",
+            (),
+            {"firebase_project_id": "demo-proj", "frontend_origin": "https://example.com"},
+        )(),
+    )
+
+    class FakeResponse:
+        status_code = 404
+        text = '{"error":{"status":"NOT_FOUND","message":"Requested entity was not found."}}'
+
+    monkeypatch.setattr("app.services.fcm.httpx.post", lambda *args, **kwargs: FakeResponse())
+    from app.services.fcm import probe_fcm_token
+
+    assert probe_fcm_token("gone-token") == "gone"

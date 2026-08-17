@@ -1,6 +1,6 @@
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -9,7 +9,9 @@ from app.db import get_db
 from app.models import User
 from app.services.fcm import (
     device_count,
+    fcm_web_configured,
     firebase_messaging_sw_source,
+    probe_fcm_token,
     public_web_config,
     register_push_device,
     unregister_push_device,
@@ -63,6 +65,8 @@ def register_device(
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ) -> PushDeviceOut:
+    if not fcm_web_configured():
+        raise HTTPException(status_code=503, detail="푸시가 설정되지 않았습니다")
     register_push_device(
         db,
         user.id,
@@ -70,6 +74,12 @@ def register_device(
         platform=payload.platform,
         device_id=payload.device_id,
     )
+    db.flush()
+    probe = probe_fcm_token(payload.token)
+    if probe == "gone":
+        unregister_push_device(db, user.id, token=payload.token)
+        db.commit()
+        raise HTTPException(status_code=400, detail="유효하지 않은 푸시 토큰입니다")
     db.commit()
     return PushDeviceOut(registered=True, device_count=device_count(db, user.id))
 

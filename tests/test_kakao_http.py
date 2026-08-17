@@ -158,7 +158,7 @@ async def test_send_digest_via_kakao_paths(monkeypatch):
     monkeypatch.setenv("KAKAO_REST_API_KEY", "")
     get_settings.cache_clear()
     try:
-        ok, msg = await send_digest_via_kakao(SimpleNamespace(kakao=None), "t", "b")
+        ok, msg, _chunks = await send_digest_via_kakao(SimpleNamespace(kakao=None), "t", "b")
         assert ok is True
     finally:
         get_settings.cache_clear()
@@ -167,7 +167,7 @@ async def test_send_digest_via_kakao_paths(monkeypatch):
     get_settings.cache_clear()
     try:
         user = SimpleNamespace(kakao=None)
-        ok, msg = await send_digest_via_kakao(user, "t", "b")
+        ok, msg, _chunks = await send_digest_via_kakao(user, "t", "b")
         assert ok is False
 
         user = SimpleNamespace(kakao=SimpleNamespace(access_token="a", refresh_token="r"))
@@ -176,7 +176,7 @@ async def test_send_digest_via_kakao_paths(monkeypatch):
             raise RuntimeError("no refresh")
 
         monkeypatch.setattr("app.services.kakao.ensure_fresh_access_token", boom_fresh)
-        ok, msg = await send_digest_via_kakao(user, "t", "b", db=SimpleNamespace())
+        ok, msg, _chunks = await send_digest_via_kakao(user, "t", "b", db=SimpleNamespace())
         assert ok is False
         assert "token refresh failed" in msg
 
@@ -187,8 +187,8 @@ async def test_send_digest_via_kakao_paths(monkeypatch):
             return [{"ok": True}]
 
         monkeypatch.setattr("app.services.kakao.ensure_fresh_access_token", fresh)
-        monkeypatch.setattr("app.services.kakao.send_memo_to_me", send_ok)
-        ok, msg = await send_digest_via_kakao(user, "t", "b", db=SimpleNamespace())
+        monkeypatch.setattr("app.services.kakao._post_memo", send_ok)
+        ok, msg, _chunks = await send_digest_via_kakao(user, "t", "b", db=SimpleNamespace())
         assert ok is True
 
         async def token_err(*_a, **_k):
@@ -197,9 +197,9 @@ async def test_send_digest_via_kakao_paths(monkeypatch):
         async def refresh_fail(*_a, **_k):
             raise RuntimeError("still bad")
 
-        monkeypatch.setattr("app.services.kakao.send_memo_to_me", token_err)
+        monkeypatch.setattr("app.services.kakao._post_memo", token_err)
         monkeypatch.setattr("app.services.kakao._refresh_user_token", refresh_fail)
-        ok, msg = await send_digest_via_kakao(user, "t", "b", db=SimpleNamespace())
+        ok, msg, _chunks = await send_digest_via_kakao(user, "t", "b", db=SimpleNamespace())
         assert ok is False
 
         async def refresh_ok(*_a, **_k):
@@ -211,18 +211,18 @@ async def test_send_digest_via_kakao_paths(monkeypatch):
             calls["n"] += 1
             if calls["n"] == 1:
                 raise KakaoApiError("expired", status_code=401, kakao_code=-401)
-            return [{"ok": True}]
+            return {"ok": True}
 
         monkeypatch.setattr("app.services.kakao._refresh_user_token", refresh_ok)
-        monkeypatch.setattr("app.services.kakao.send_memo_to_me", send_after)
-        ok, msg = await send_digest_via_kakao(user, "t", "b", db=SimpleNamespace())
+        monkeypatch.setattr("app.services.kakao._post_memo", send_after)
+        ok, msg, _chunks = await send_digest_via_kakao(user, "t", "b", db=SimpleNamespace())
         assert ok is True
 
         async def scope_err(*_a, **_k):
             raise KakaoApiError("insufficient scopes.", status_code=403, kakao_code=-402)
 
-        monkeypatch.setattr("app.services.kakao.send_memo_to_me", scope_err)
-        ok, msg = await send_digest_via_kakao(user, "t", "b", db=SimpleNamespace())
+        monkeypatch.setattr("app.services.kakao._post_memo", scope_err)
+        ok, msg, _chunks = await send_digest_via_kakao(user, "t", "b", db=SimpleNamespace())
         assert ok is False
         assert "나에게 보내기" in msg
 
@@ -230,8 +230,8 @@ async def test_send_digest_via_kakao_paths(monkeypatch):
             raise RuntimeError("network")
 
         monkeypatch.setattr("app.services.kakao.ensure_fresh_access_token", fresh)
-        monkeypatch.setattr("app.services.kakao.send_memo_to_me", other_err)
-        ok, msg = await send_digest_via_kakao(user, "t", "b")
+        monkeypatch.setattr("app.services.kakao._post_memo", other_err)
+        ok, msg, _chunks = await send_digest_via_kakao(user, "t", "b")
         assert ok is False
         assert "network" in msg
     finally:

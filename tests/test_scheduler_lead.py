@@ -64,10 +64,10 @@ async def test_tick_prepares_early_then_sends_at_slot(tmp_path, monkeypatch):
 
     sends: list[int] = []
 
-    async def capture_send(user, title, body, db=None):
+    async def capture_send(user, title, body, db=None, **_k):
         _ = (user, title, body, db)
         sends.append(1)
-        return True, ""
+        return True, "", 1
 
     monkeypatch.setattr("app.services.delivery.send_digest_via_kakao", capture_send)
     sch._sent_slots.clear()

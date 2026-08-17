@@ -71,7 +71,7 @@ async def test_notification_hook_sends_kakao_once(client: AsyncClient, monkeypat
     async def _fake_send(user, title, body, *, db=None):
         _ = (user, db)
         sent.append((title, body))
-        return True, ""
+        return True, "", 1
 
     monkeypatch.setattr("app.routers.hooks.send_digest_via_kakao", _fake_send)
     headers = {"X-Webhook-Secret": "hook-secret-test"}
@@ -101,7 +101,7 @@ async def test_notification_hook_bearer_and_missing_target(client: AsyncClient, 
     assert res.json()["skipped"] == "target_missing"
 
     async def fail_send(*_a, **_k):
-        return False, "Kakao account is not connected"
+        return False, "Kakao account is not connected", 0
 
     monkeypatch.setattr("app.routers.hooks.send_digest_via_kakao", fail_send)
     monkeypatch.setenv("FLASH_ALERT_USER_EMAIL", "admin@example.com")

@@ -382,12 +382,22 @@ def _is_token_error(exc: KakaoApiError) -> bool:
     return "token" in msg or "expired" in msg or "unauthorized" in msg or exc.status_code == 401
 
 
-async def send_memo_to_me(access_token: str, title: str, body: str) -> list[dict]:
-    """Send one or more text templates to KakaoTalk 'me' (chunks under 1000 chars)."""
+async def send_memo_to_me(
+    access_token: str,
+    title: str,
+    body: str,
+    *,
+    start_chunk: int = 0,
+) -> tuple[list[dict], int]:
+    """Send memo chunks; resume from start_chunk. Returns API payloads and total chunks sent."""
+    chunks = split_memo_chunks(title, body)
+    start = max(0, min(int(start_chunk), len(chunks)))
     results: list[dict] = []
-    for chunk in split_memo_chunks(title, body):
-        results.append(await _post_memo(access_token, chunk))
-    return results
+    sent = start
+    for index in range(start, len(chunks)):
+        results.append(await _post_memo(access_token, chunks[index]))
+        sent = index + 1
+    return results, sent
 
 
 async def _refresh_user_token(db: Session, user: User) -> str:
@@ -447,33 +457,49 @@ async def send_digest_via_kakao(
     body: str,
     *,
     db: Session | None = None,
-) -> tuple[bool, str]:
+    chunks_sent: int = 0,
+) -> tuple[bool, str, int]:
     settings = get_settings()
     if not settings.kakao_configured:
-        return True, "mock: kakao not configured — digest stored as sent"
+        total = len(split_memo_chunks(title, body))
+        return True, "mock: kakao not configured — digest stored as sent", total
 
     account = kakao_account_for(user, db)
     if account is None or not account.access_token:
-        return False, "Kakao account is not connected"
+        return False, "Kakao account is not connected", int(chunks_sent)
 
     access = account.access_token
     if db is not None:
         try:
             access = await ensure_fresh_access_token(db, user)
         except Exception as refresh_exc:  # noqa: BLE001
-            return False, f"token refresh failed: {refresh_exc}"
+            return False, f"token refresh failed: {refresh_exc}", int(chunks_sent)
 
-    try:
-        await send_memo_to_me(access, title, body)
-        return True, ""
-    except KakaoApiError as exc:
-        if db is not None and _is_token_error(exc):
-            try:
-                access = await _refresh_user_token(db, user)
-                await send_memo_to_me(access, title, body)
-                return True, "refreshed token then sent"
-            except Exception as refresh_exc:  # noqa: BLE001
-                return False, f"token refresh failed: {refresh_exc}"
-        return False, friendly_kakao_send_error(str(exc))
-    except Exception as exc:  # noqa: BLE001 — surface to digest.error_message
-        return False, friendly_kakao_send_error(str(exc))
+    async def _send(token: str, start: int) -> tuple[bool, str, int, KakaoApiError | None]:
+        chunks = split_memo_chunks(title, body)
+        sent = max(0, min(int(start), len(chunks)))
+        try:
+            for index in range(sent, len(chunks)):
+                await _post_memo(token, chunks[index])
+                sent = index + 1
+            return True, "", sent, None
+        except KakaoApiError as exc:
+            return False, friendly_kakao_send_error(str(exc)), sent, exc
+        except Exception as exc:  # noqa: BLE001
+            return False, friendly_kakao_send_error(str(exc)), sent, None
+
+    ok, err, sent, api_exc = await _send(access, int(chunks_sent))
+    if ok:
+        return True, "", sent
+
+    if db is not None and api_exc is not None and _is_token_error(api_exc):
+        try:
+            access = await _refresh_user_token(db, user)
+            ok, err, sent, _api_exc = await _send(access, sent)
+            if ok:
+                return True, "refreshed token then sent", sent
+            return False, err, sent
+        except Exception as refresh_exc:  # noqa: BLE001
+            return False, f"token refresh failed: {refresh_exc}", sent
+
+    return False, err, sent

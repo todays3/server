@@ -69,18 +69,18 @@ async def test_send_digest_refreshes_before_memo_when_stale(monkeypatch):
 
     sent: list[str] = []
 
-    async def _memo(access: str, title: str, body: str):
+    async def _memo(access: str, text: str):
         sent.append(access)
-        return [{}]
+        return {}
 
     monkeypatch.setattr(kakao_mod, "refresh_access_token", _refresh)
-    monkeypatch.setattr(kakao_mod, "send_memo_to_me", _memo)
+    monkeypatch.setattr(kakao_mod, "_post_memo", _memo)
 
     user = User(email="u@example.com", display_name="유저", status="approved")
     user.kakao = KakaoAccount(access_token="stale-a", refresh_token="r", access_expires_at=None)
     db = SimpleNamespace(add=lambda *_a, **_k: None, commit=lambda: None, refresh=lambda *_a: None)
 
-    ok, err = await kakao_mod.send_digest_via_kakao(user, "제목", "본문", db=db)
+    ok, err, _chunks = await kakao_mod.send_digest_via_kakao(user, "제목", "본문", db=db)
     assert ok is True
     assert err == ""
     assert refreshed == ["r"]
@@ -101,12 +101,12 @@ async def test_send_digest_does_not_refresh_when_access_still_valid(monkeypatch)
         called["refresh"] += 1
         return {"access_token": "nope"}
 
-    async def _memo(access: str, title: str, body: str):
+    async def _memo(access: str, text: str):
         assert access == "good-a"
-        return [{}]
+        return {}
 
     monkeypatch.setattr(kakao_mod, "refresh_access_token", _refresh)
-    monkeypatch.setattr(kakao_mod, "send_memo_to_me", _memo)
+    monkeypatch.setattr(kakao_mod, "_post_memo", _memo)
 
     user = User(email="u@example.com", display_name="유저", status="approved")
     user.kakao = KakaoAccount(
@@ -116,6 +116,6 @@ async def test_send_digest_does_not_refresh_when_access_still_valid(monkeypatch)
     )
     db = SimpleNamespace(add=lambda *_a, **_k: None, commit=lambda: None, refresh=lambda *_a: None)
 
-    ok, _err = await kakao_mod.send_digest_via_kakao(user, "제목", "본문", db=db)
+    ok, _err, _chunks = await kakao_mod.send_digest_via_kakao(user, "제목", "본문", db=db)
     assert ok is True
     assert called["refresh"] == 0

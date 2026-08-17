@@ -69,7 +69,7 @@ async def ingest_notification(
     if user is None:
         return NotificationHookOut(accepted=True, duplicate=False, sent=False, skipped="target_missing")
 
-    ok, err = await send_digest_via_kakao(user, title, body, db=db)
+    ok, err, _chunks = await send_digest_via_kakao(user, title, body, db=db)
     if not ok:
         skipped = "kakao_not_connected" if "not connected" in (err or "").lower() else "kakao_failed"
         return NotificationHookOut(accepted=True, duplicate=False, sent=False, skipped=skipped)

@@ -82,7 +82,37 @@ async def test_register_device_requires_auth(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_register_two_devices_and_list_count(client: AsyncClient, db_session):
+async def test_register_device_rejects_when_firebase_web_not_configured(client: AsyncClient, db_session, monkeypatch):
+    monkeypatch.setattr("app.routers.push.fcm_web_configured", lambda: False)
+    headers = _bearer(db_session)
+    res = await client.post(
+        "/api/v1/push/devices",
+        headers=headers,
+        json={"token": "phone-token-aaaaaaaaaaaa", "platform": "web", "device_id": "phone"},
+    )
+    assert res.status_code == 503
+    assert "설정" in res.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_register_device_rejects_invalid_token(client: AsyncClient, db_session, monkeypatch):
+    monkeypatch.setattr("app.routers.push.fcm_web_configured", lambda: True)
+    monkeypatch.setattr("app.routers.push.probe_fcm_token", lambda _token: "gone")
+    headers = _bearer(db_session)
+    res = await client.post(
+        "/api/v1/push/devices",
+        headers=headers,
+        json={"token": "phone-token-aaaaaaaaaaaa", "platform": "web", "device_id": "phone"},
+    )
+    assert res.status_code == 400
+    user = db_session.query(User).filter_by(email="user@example.com").one()
+    assert db_session.query(PushDevice).filter_by(user_id=user.id).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_register_two_devices_and_list_count(client: AsyncClient, db_session, monkeypatch):
+    monkeypatch.setattr("app.routers.push.fcm_web_configured", lambda: True)
+    monkeypatch.setattr("app.routers.push.probe_fcm_token", lambda _token: "ok")
     headers = _bearer(db_session)
     first = await client.post(
         "/api/v1/push/devices",
@@ -101,7 +131,9 @@ async def test_register_two_devices_and_list_count(client: AsyncClient, db_sessi
 
 
 @pytest.mark.asyncio
-async def test_unregister_device(client: AsyncClient, db_session):
+async def test_unregister_device(client: AsyncClient, db_session, monkeypatch):
+    monkeypatch.setattr("app.routers.push.fcm_web_configured", lambda: True)
+    monkeypatch.setattr("app.routers.push.probe_fcm_token", lambda _token: "ok")
     headers = _bearer(db_session)
     await client.post(
         "/api/v1/push/devices",

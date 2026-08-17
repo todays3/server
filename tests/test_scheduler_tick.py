@@ -119,7 +119,7 @@ async def test_tick_morning_digests_skips_then_sends(tmp_path, monkeypatch):
     monkeypatch.setattr("app.services.digest.gather_candidates", lambda *a, **k: items)
 
     async def send_ok(*_a, **_k):
-        return True, ""
+        return True, "", 1
 
     monkeypatch.setattr("app.services.delivery.send_digest_via_kakao", send_ok)
     await sch.tick_morning_digests()

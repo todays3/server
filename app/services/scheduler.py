@@ -10,7 +10,7 @@ import logging
 import threading
 from collections import defaultdict
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from os import getenv
 from zoneinfo import ZoneInfo
 
@@ -22,8 +22,9 @@ from app.db import SessionLocal
 from app.models import CrawlRun, Digest, Preference, User
 from app.services.delivery import deliver_digest
 from app.services.digest import create_digest
-from app.services.pipeline_timing import TICK_SECONDS, due_actions, suggested_lead_seconds_from_db
-from app.services.send_times import parse_send_times_raw, slot_set
+from app.services.fcm import notify_digest_missed
+from app.services.pipeline_timing import SEND_GRACE_MINUTES, TICK_SECONDS, due_actions, suggested_lead_seconds_from_db
+from app.services.send_times import format_hm, parse_send_times_raw, slot_set
 from app.services.shared_crawl import ensure_shared_crawl, get_shared_items, slice_shared_items
 from app.services.slot_cluster import cluster_key, cluster_slot_labels
 from app.services.sources import SourceItem
@@ -319,11 +320,54 @@ async def execute_due_job(job: DueJob) -> None:
             return
 
         db.refresh(user)
-        ok, _err = await deliver_digest(db, user, digest)
-        if ok:
+        result = await deliver_digest(db, user, digest)
+        if result.ok:
             with _state_lock:
                 _sent_slots.add(slot_key)
                 _prepared_slots.add(slot_key)
+    finally:
+        db.close()
+
+
+def _notify_missed_for_user(db: Session, user: User, pref: Preference, now: datetime) -> None:
+    grace = timedelta(minutes=SEND_GRACE_MINUTES)
+    slots = slot_set(
+        parse_send_times_raw(pref.send_times, hour=pref.send_hour, minute=pref.send_minute)
+    )
+    for hour, minute in sorted(slots):
+        slot_label = format_hm(hour, minute)
+        slot_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if now < slot_dt + grace:
+            continue
+        if _already_sent(db, user, slot_label, now):
+            continue
+        digest = _find_prepared_digest(db, user.id, slot_label, now)
+        if digest is not None and digest.status == "sent":
+            continue
+        if digest is not None and digest.miss_notified:
+            continue
+        notify_digest_missed(db, user.id, slot_label)
+        if digest is not None:
+            digest.miss_notified = True
+            db.add(digest)
+            db.commit()
+
+
+async def notify_missed_scheduled_digests() -> None:
+    db = SessionLocal()
+    try:
+        prefs = db.scalars(
+            select(Preference)
+            .where(Preference.enabled.is_(True))
+            .options(joinedload(Preference.user))
+        ).all()
+        for pref in prefs:
+            user = pref.user
+            if user is None or user.status != "approved":
+                continue
+            tz = ZoneInfo(pref.timezone or "Asia/Seoul")
+            now = aware_now(tz)
+            _notify_missed_for_user(db, user, pref, now)
     finally:
         db.close()
 
@@ -354,6 +398,7 @@ async def tick_morning_digests() -> None:
                     )
 
         await asyncio.gather(*(_run(job) for job in group))
+    await notify_missed_scheduled_digests()
 
 
 def _jobs_by_cluster(jobs: list[DueJob]) -> dict[str, list[DueJob]]:

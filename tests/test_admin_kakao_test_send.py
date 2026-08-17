@@ -61,7 +61,7 @@ async def test_kakao_test_send_skips_ai_and_digest(client: AsyncClient, db_sessi
 
     async def fake_send(user, title, body, db=None):
         sent.append((user.id, title, body))
-        return True, ""
+        return True, "", 1
 
     def boom(*_a, **_k):
         raise AssertionError("crawl/LLM must not run")
