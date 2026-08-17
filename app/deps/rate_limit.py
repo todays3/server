@@ -78,3 +78,14 @@ def rate_limit_notes(
         max_calls=settings.rate_limit_notes_max,
         window_seconds=settings.rate_limit_notes_window_seconds,
     )
+
+
+def rate_limit_note_hearts(
+    user: Annotated[User, Depends(get_current_user)],
+) -> None:
+    settings = get_settings()
+    _limiter.check(
+        f"notes-heart:{user.id}",
+        max_calls=settings.rate_limit_note_hearts_max,
+        window_seconds=settings.rate_limit_note_hearts_window_seconds,
+    )
