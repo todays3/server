@@ -79,6 +79,7 @@ async def test_post_uses_nickname_and_list_is_public_to_other_users(client: Asyn
     note = posted.json()
     assert note["nickname"] == "쪽지남"
     assert note["body"] == "미리보기 글자가 작아요"
+    assert note["kind"] == "suggestion"
     assert "user_id" not in note
     assert "email" not in note
     assert "writer@example.com" not in posted.text
@@ -89,9 +90,21 @@ async def test_post_uses_nickname_and_list_is_public_to_other_users(client: Asyn
     assert len(notes) == 1
     assert notes[0]["nickname"] == "쪽지남"
     assert notes[0]["body"] == "미리보기 글자가 작아요"
+    assert notes[0]["kind"] == "suggestion"
     assert "user_id" not in notes[0]
     assert "reader@example.com" not in listed.text
     assert "writer@example.com" not in listed.text
+
+
+@pytest.mark.asyncio
+async def test_member_cannot_set_update_kind_on_post(client: AsyncClient, db_session):
+    posted = await client.post(
+        "/api/v1/notes",
+        headers=_auth(db_session, "writer@example.com"),
+        json={"body": "이건 공지처럼 보이게", "kind": "update"},
+    )
+    assert posted.status_code == 200
+    assert posted.json()["kind"] == "suggestion"
 
 
 @pytest.mark.asyncio

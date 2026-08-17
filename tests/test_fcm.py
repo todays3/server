@@ -4,8 +4,12 @@ from app.models import Digest, PushDevice, User
 from app.services.delivery import deliver_digest
 from app.services.fcm import (
     MAX_DEVICES_PER_USER,
+    UPDATE_PUSH_BODY,
+    UPDATE_PUSH_TITLE,
+    UPDATE_PUSH_URL,
     fcm_web_message,
     firebase_messaging_sw_source,
+    notify_all_devices,
     notify_digest_sent,
     prune_invalid_tokens,
     register_push_device,
@@ -57,6 +61,25 @@ def test_fcm_web_message_is_data_only_so_chrome_does_not_auto_display():
     assert message["data"]["title"] == "하루만장 · 8/16"
     assert message["data"]["body"] == "미리보기"
     assert message["data"]["url"] == "/app"
+    assert message["data"]["tag"] == "todays3-digest"
+
+
+def test_fcm_web_message_can_open_notes_for_update_news():
+    payload = fcm_web_message(
+        "device-token",
+        UPDATE_PUSH_TITLE,
+        UPDATE_PUSH_BODY,
+        url=UPDATE_PUSH_URL,
+        tag="todays3-update",
+    )
+    data = payload["message"]["data"]
+    assert data["title"] == "하루만장"
+    assert data["body"] == "업데이트 소식이 있습니다"
+    assert "홈화면" not in data["body"]
+    assert data["url"] == "/app/notes"
+    assert data["tag"] == "todays3-update"
+    webpush = payload["message"]["webpush"]
+    assert webpush["fcm_options"]["link"].endswith("/app/notes")
 
 
 def test_fcm_sw_skips_show_when_fcm_already_displayed_notification(monkeypatch):
@@ -76,6 +99,7 @@ def test_fcm_sw_skips_show_when_fcm_already_displayed_notification(monkeypatch):
     assert "if (n.title || n.body)" in src
     assert "showNotification" in src
     assert "todays3-digest" in src
+    assert "data.tag" in src
 
 
 def test_notify_sends_once_per_device_even_when_kakao_body_is_long(db_session):
@@ -111,6 +135,33 @@ def test_notify_sends_to_every_device_and_drops_gone_tokens(db_session):
     assert sent == ["alive", "dead"] or set(sent) == {"alive", "dead"}
     leftover = {row.token for row in db_session.query(PushDevice).filter_by(user_id=user.id)}
     assert leftover == {"alive"}
+
+
+def test_notify_all_devices_reaches_every_user_and_drops_gone(db_session):
+    a = _user(db_session, "a@example.com")
+    b = _user(db_session, "b@example.com")
+    register_push_device(db_session, a.id, token="alive-a", platform="web", device_id="a1")
+    register_push_device(db_session, a.id, token="dead-a", platform="web", device_id="a2")
+    register_push_device(db_session, b.id, token="alive-b", platform="web", device_id="b1")
+    db_session.commit()
+    sent: list[tuple[str, str, str]] = []
+
+    def send_one(token: str, title: str, body: str) -> str:
+        sent.append((token, title, body))
+        return "gone" if token.startswith("dead") else "ok"
+
+    n = notify_all_devices(
+        db_session,
+        UPDATE_PUSH_TITLE,
+        UPDATE_PUSH_BODY,
+        url=UPDATE_PUSH_URL,
+        send_one=send_one,
+    )
+    assert n == 2
+    assert {row[0] for row in sent} == {"alive-a", "dead-a", "alive-b"}
+    assert all(row[1] == "하루만장" and row[2] == "업데이트 소식이 있습니다" for row in sent)
+    leftover = {row.token for row in db_session.query(PushDevice).all()}
+    assert leftover == {"alive-a", "alive-b"}
 
 
 def test_notify_skips_when_sender_disabled(db_session, monkeypatch):

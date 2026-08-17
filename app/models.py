@@ -47,6 +47,9 @@ class Preference(Base):
     sources: Mapped[str] = mapped_column(Text, default="naver-finance,toss-securities,yahoo-finance")
     # per-item follow-up insight question + helper URL
     insight_questions: Mapped[bool] = mapped_column(Boolean, default=False)
+    # comma-separated desk role ids (investor, developer, …)
+    roles: Mapped[str] = mapped_column(Text, default="")
+    role_settings: Mapped[str] = mapped_column(Text, default="{}")
 
     user: Mapped[User] = relationship(back_populates="preference")
 
@@ -142,7 +145,9 @@ class StickyNote(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     nickname: Mapped[str] = mapped_column(String(120), default="")
-    body: Mapped[str] = mapped_column(String(400))
+    body: Mapped[str] = mapped_column(String(800))
+    # suggestion | update — members can only create suggestion
+    kind: Mapped[str] = mapped_column(String(32), default="suggestion", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
     user: Mapped[User] = relationship(back_populates="sticky_notes")

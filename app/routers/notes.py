@@ -1,7 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_user
@@ -24,7 +24,15 @@ def list_notes(
     db: Annotated[Session, Depends(get_db)],
 ) -> list[StickyNote]:
     return list(
-        db.scalars(select(StickyNote).order_by(StickyNote.created_at.desc(), StickyNote.id.desc()).limit(80)).all()
+        db.scalars(
+            select(StickyNote)
+            .order_by(
+                case((StickyNote.kind == "update", 0), else_=1),
+                StickyNote.created_at.desc(),
+                StickyNote.id.desc(),
+            )
+            .limit(80)
+        ).all()
     )
 
 
@@ -34,7 +42,7 @@ def create_note(
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ) -> StickyNote:
-    note = StickyNote(user_id=user.id, nickname=_public_nickname(user), body=payload.body)
+    note = StickyNote(user_id=user.id, nickname=_public_nickname(user), body=payload.body, kind="suggestion")
     db.add(note)
     db.commit()
     db.refresh(note)

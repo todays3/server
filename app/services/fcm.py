@@ -18,6 +18,13 @@ from app.models import PushDevice
 MAX_DEVICES_PER_USER = 20
 SendOne = Callable[[str, str, str], str]
 
+UPDATE_PUSH_TITLE = "하루만장"
+UPDATE_PUSH_BODY = "업데이트 소식이 있습니다"
+UPDATE_PUSH_URL = "/app/notes"
+UPDATE_NOTE_KIND = "update"
+SUGGESTION_NOTE_KIND = "suggestion"
+UPDATE_NOTE_NICKNAME = "하루만장"
+
 _token_cache: tuple[str, float] | None = None
 
 FCM_SW_STUB = """/* todays3 fcm */
@@ -73,7 +80,7 @@ def firebase_messaging_sw_source() -> str:
         "  return self.registration.showNotification(data.title || '하루만장', {\n"
         "    body: data.body || '카카오톡으로 하루만장을 보냈습니다',\n"
         "    icon: '/pwa-192x192.png',\n"
-        "    tag: 'todays3-digest',\n"
+        "    tag: data.tag || 'todays3-digest',\n"
         "    data: data,\n"
         "  });\n"
         "});\n"
@@ -95,6 +102,10 @@ def push_body_preview(body: str) -> str:
 
 def device_count(db: Session, user_id: int) -> int:
     return db.query(PushDevice).filter(PushDevice.user_id == user_id).count()
+
+
+def total_device_count(db: Session) -> int:
+    return db.query(PushDevice).count()
 
 
 def register_push_device(
@@ -169,10 +180,36 @@ def notify_digest_sent(
     *,
     send_one: SendOne | None = None,
 ) -> int:
+    devices = db.scalars(select(PushDevice).where(PushDevice.user_id == user_id)).all()
+    return _notify_devices(db, devices, title, body, url="/app", tag="todays3-digest", send_one=send_one)
+
+
+def notify_all_devices(
+    db: Session,
+    title: str,
+    body: str,
+    *,
+    url: str = UPDATE_PUSH_URL,
+    tag: str = "todays3-update",
+    send_one: SendOne | None = None,
+) -> int:
+    devices = db.scalars(select(PushDevice)).all()
+    return _notify_devices(db, devices, title, body, url=url, tag=tag, send_one=send_one)
+
+
+def _notify_devices(
+    db: Session,
+    devices: list[PushDevice],
+    title: str,
+    body: str,
+    *,
+    url: str,
+    tag: str,
+    send_one: SendOne | None,
+) -> int:
     if send_one is None and not fcm_send_configured():
         return 0
-    sender = send_one or fcm_send_one
-    devices = db.scalars(select(PushDevice).where(PushDevice.user_id == user_id)).all()
+    sender = send_one or (lambda token, short_title, preview: fcm_send_one(token, short_title, preview, url=url, tag=tag))
     preview = push_body_preview(body)
     short_title = (title or "하루만장")[:80]
     sent = 0
@@ -186,31 +223,46 @@ def notify_digest_sent(
     return sent
 
 
-def fcm_web_message(token: str, title: str, body: str) -> dict[str, object]:
+def fcm_web_message(
+    token: str,
+    title: str,
+    body: str,
+    *,
+    url: str = "/app",
+    tag: str = "todays3-digest",
+) -> dict[str, object]:
     """Data-only web payload. A `notification` block makes Chrome display once and
     the service worker display again."""
     settings = get_settings()
+    path = url if url.startswith("/") else f"/{url}"
     return {
         "message": {
             "token": token,
-            "data": {"title": title, "body": body, "url": "/app"},
+            "data": {"title": title, "body": body, "url": path, "tag": tag},
             "webpush": {
-                "fcm_options": {"link": f"{settings.frontend_origin.rstrip('/')}/app"},
+                "fcm_options": {"link": f"{settings.frontend_origin.rstrip('/')}{path}"},
             },
         }
     }
 
 
-def fcm_send_one(token: str, title: str, body: str) -> str:
+def fcm_send_one(
+    token: str,
+    title: str,
+    body: str,
+    *,
+    url: str = "/app",
+    tag: str = "todays3-digest",
+) -> str:
     if not fcm_send_configured():
         return "skip"
     settings = get_settings()
     try:
         access = _google_access_token()
-        url = f"https://fcm.googleapis.com/v1/projects/{settings.firebase_project_id}/messages:send"
-        payload = fcm_web_message(token, title, body)
+        url_fcm = f"https://fcm.googleapis.com/v1/projects/{settings.firebase_project_id}/messages:send"
+        payload = fcm_web_message(token, title, body, url=url, tag=tag)
         response = httpx.post(
-            url,
+            url_fcm,
             headers={"Authorization": f"Bearer {access}", "Content-Type": "application/json"},
             json=payload,
             timeout=15.0,

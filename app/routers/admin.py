@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.auth import get_admin_user
 from app.config import get_settings
 from app.db import get_db
-from app.models import CrawlRun, LlmUsage, Preference, User
+from app.models import CrawlRun, LlmUsage, Preference, StickyNote, User
 from app.schemas import (
     AdminDailyPoint,
     AdminDigestPreviewOut,
@@ -20,6 +20,8 @@ from app.schemas import (
     AdminOverview,
     AdminPrefDetail,
     AdminStatusUpdate,
+    AdminUpdateIn,
+    AdminUpdateOut,
     AdminUsageEvent,
     AdminUsageSummary,
     AdminUserDetail,
@@ -39,7 +41,18 @@ from app.services.crawl_log import persist_crawl_run
 from app.services.digest import build_digest_preview
 from app.services.run_resources import peak_sampler
 from app.services.kakao import send_digest_via_kakao
-from app.services.fcm import device_count, fcm_send_configured, notify_digest_sent
+from app.services.fcm import (
+    UPDATE_NOTE_KIND,
+    UPDATE_NOTE_NICKNAME,
+    UPDATE_PUSH_BODY,
+    UPDATE_PUSH_TITLE,
+    UPDATE_PUSH_URL,
+    device_count,
+    fcm_send_configured,
+    notify_all_devices,
+    notify_digest_sent,
+    total_device_count,
+)
 from app.services.pipeline_timing import (
     LAYER_KEYS,
     percentile,
@@ -591,6 +604,35 @@ async def kakao_test_send(
         push_devices=push_devices,
         push_sent=push_sent,
         push_error=push_error,
+    )
+
+
+@router.post("/updates", response_model=AdminUpdateOut)
+def publish_update(
+    payload: AdminUpdateIn,
+    admin: Annotated[User, Depends(get_admin_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> AdminUpdateOut:
+    note = StickyNote(
+        user_id=admin.id,
+        nickname=UPDATE_NOTE_NICKNAME,
+        body=payload.body,
+        kind=UPDATE_NOTE_KIND,
+    )
+    db.add(note)
+    db.commit()
+    db.refresh(note)
+    devices = total_device_count(db)
+    sent = notify_all_devices(db, UPDATE_PUSH_TITLE, UPDATE_PUSH_BODY, url=UPDATE_PUSH_URL)
+    db.commit()
+    return AdminUpdateOut(
+        id=note.id,
+        nickname=note.nickname,
+        body=note.body,
+        kind=note.kind,
+        created_at=note.created_at,
+        push_sent=sent,
+        device_count=devices,
     )
 
 
