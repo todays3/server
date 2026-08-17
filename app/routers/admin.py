@@ -99,10 +99,10 @@ def _aware(dt: datetime) -> datetime:
 
 
 def _delivery_status(usage: LlmUsage, digest: Digest | None) -> str:
-    if digest is not None:
-        return digest.status
     if not usage.success:
         return "failed"
+    if digest is not None:
+        return digest.status
     return ""
 
 

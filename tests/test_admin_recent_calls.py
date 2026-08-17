@@ -64,12 +64,19 @@ def _usage(
     )
 
 
-def test_delivery_status_prefers_digest_then_llm_failure():
+def test_delivery_status_uses_digest_state_unless_llm_failed():
     sent = Digest(user_id=1, title="t", body="b", status="sent")
+    failed = Digest(user_id=1, title="t", body="b", status="failed")
+    sending = Digest(user_id=1, title="t", body="b", status="sending")
+    draft = Digest(user_id=1, title="t", body="b", status="draft")
     ok = _usage(1, success=True)
     fail = _usage(1, success=False)
     assert _delivery_status(ok, sent) == "sent"
+    assert _delivery_status(ok, failed) == "failed"
+    assert _delivery_status(ok, sending) == "sending"
+    assert _delivery_status(ok, draft) == "draft"
     assert _delivery_status(fail, None) == "failed"
+    assert _delivery_status(fail, sent) == "failed"
     assert _delivery_status(ok, None) == ""
 
 
