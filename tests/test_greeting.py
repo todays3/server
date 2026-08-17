@@ -1,7 +1,7 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from app.services.greeting import greeting_line
+from app.services.greeting import digest_opening_line, greeting_line
 
 SEOUL = ZoneInfo("Asia/Seoul")
 
@@ -35,3 +35,16 @@ def test_every_hour_has_a_short_line_with_name():
         assert "민수님" in line
         assert 8 <= len(line) <= 40
         assert "하루만장" not in line
+
+
+def test_digest_opening_includes_assistant_intro_and_user_hello():
+    line = digest_opening_line("박준석", "민준", now=_at(18))
+    assert "민준" in line
+    assert "박준석님" in line
+    assert line.endswith("박준석님.") or line.endswith("박준석님?")
+
+
+def test_digest_opening_varies_intro_pattern():
+    lines = {digest_opening_line("박준석", "서연", now=_at(h)) for h in range(24)}
+    assert any("서연입니다." in line for line in lines)
+    assert any("브리프" in line for line in lines)

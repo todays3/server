@@ -304,7 +304,7 @@ def test_llm_curate_prompt_asks_for_seumnida_style(db_session, monkeypatch):
     assert "큐레이터입니다" in prompt
     assert "큐레이터다" not in prompt
     assert "간호사" in prompt
-    assert "직업:" in prompt
+    assert "직무:" in prompt
     assert "한국 사용자" in prompt
     assert "선정 신호" in prompt
 

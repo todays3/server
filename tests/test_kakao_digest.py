@@ -49,8 +49,10 @@ def test_format_body_includes_insight_when_enabled():
         }
     ]
     body = _format_body("테스트", items, pref, ["경제/주식"], reviewed_count=12, now=datetime(2026, 8, 16, 18, 0, tzinfo=ZoneInfo("Asia/Seoul")))
-    assert "하루만장 ·" not in body.splitlines()[0]
-    assert body.splitlines()[0].endswith("테스트님.") or body.splitlines()[0].endswith("테스트님?")
+    first = body.splitlines()[0]
+    assert "하루만장 ·" not in first
+    assert "테스트님" in first
+    assert first.endswith("테스트님.") or first.endswith("테스트님?")
     assert "오늘 12개 중에 고른 1개입니다." in body
     assert "첫째. 📰 금리" in body
     assert "[아티클]" not in body
@@ -60,6 +62,24 @@ def test_format_body_includes_insight_when_enabled():
     assert "추가 질문:" in body
     assert "https://b.example" in body
     assert "12개 중 골랐습니다." not in body
+
+
+def test_format_body_uses_assistant_name_when_roles_set():
+    pref = Preference(
+        insight_questions=False,
+        roles="developer",
+        role_settings='{"assistant_names":{"developer":"지훈"}}',
+    )
+    items = [{"kind": "아티클", "title": "AI", "blurb": "요약.", "url": "https://a.example"}]
+    body = _format_body(
+        "민수",
+        items,
+        pref,
+        ["IT"],
+        now=datetime(2026, 8, 16, 18, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+    assert "지훈" in body.splitlines()[0]
+    assert "민수님" in body.splitlines()[0]
 
 
 def test_format_body_puts_a_rule_between_articles():

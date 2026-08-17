@@ -20,7 +20,7 @@ from app.services import llm as llm_service
 from app.services.crawl_log import persist_crawl_run
 from app.services.pipeline_timing import elapsed_ms
 from app.services.run_resources import peak_sampler
-from app.services.greeting import greeting_line
+from app.services.greeting import digest_opening_line
 from app.services.pick_reason import KIND_WHY, clip_why, compose_pick_reason
 from app.services.shortlist import shortlist_for_llm, topic_tokens
 from app.services.sources import SourceItem, candidates_as_prompt_block, gather_candidates
@@ -133,17 +133,31 @@ def age_band(birth: date | None, *, today: date | None = None) -> str:
     return f"{(years // 10) * 10}대"
 
 
-def profile_brief(user: User, *, today: date | None = None) -> str:
-    occ = (getattr(user, "occupation", None) or "").strip() or "(없음)"
+def profile_brief(user: User, pref: Preference | None = None, *, today: date | None = None) -> str:
+    from app.services.roles import parse_role_settings, parse_roles, roles_profile_brief, role_tokens
+
+    roles = parse_roles(getattr(pref, "roles", "") or "") if pref is not None else []
+    settings = parse_role_settings(getattr(pref, "role_settings", "") or "{}") if pref is not None else {}
+    occ = (getattr(user, "occupation", None) or "").strip()
+    if roles:
+        role_line = ", ".join(role_tokens(roles))
+        occ = role_line or occ
+    elif not occ:
+        occ = "(없음)"
     band = age_band(getattr(user, "birth_date", None), today=today) or "(없음)"
-    return (
+    base = (
         f"닉네임: {(user.display_name or '').strip() or '(없음)'}\n"
-        f"직업: {occ}\n"
+        f"직무: {occ}\n"
         f"연령대: {band}\n"
-        "직업·연령대에 실질적으로 도움이 되는 후보를 우선하고, 말투는 그 독자에 맞춥니다. "
+        "직무·연령대에 실질적으로 도움이 되는 후보를 우선합니다. "
+        "title·blurb·insight_q에는 선택한 어시스턴트의 대표 인간상·말투를 반영하되, 합니다/습니다 체는 유지합니다. "
         "생년월일·나이를 본문에 숫자로 쓰지 마세요. "
         "독자는 한국 사용자이므로 한국어 아티클·한국 영상을 우선하세요."
     )
+    role_block = roles_profile_brief(roles, settings)
+    if not role_block:
+        return base
+    return f"{base}\n{role_block}"
 
 
 _HANGUL = re.compile(r"[가-힣]")
@@ -201,8 +215,20 @@ def korean_content_score(item: SourceItem) -> int:
     return score
 
 
-def personalize_candidates(candidates: list[SourceItem], user: User) -> list[SourceItem]:
-    tokens = occupation_tokens(getattr(user, "occupation", "") or "")
+def _job_tokens(user: User, pref: Preference | None = None) -> list[str]:
+    from app.services.roles import parse_roles, role_tokens
+
+    if pref is not None:
+        roles = parse_roles(getattr(pref, "roles", "") or "")
+        if roles:
+            return role_tokens(roles)
+    return occupation_tokens(getattr(user, "occupation", "") or "")
+
+
+def personalize_candidates(
+    candidates: list[SourceItem], user: User, pref: Preference | None = None
+) -> list[SourceItem]:
+    tokens = _job_tokens(user, pref)
     band = age_band(getattr(user, "birth_date", None))
     if band:
         tokens = [*tokens, band]
@@ -228,8 +254,10 @@ def personalize_candidates(candidates: list[SourceItem], user: User) -> list[Sou
     ]
 
 
-def llm_shortlist(candidates: list[SourceItem], user: User, topics: list[str]) -> list[SourceItem]:
-    job = occupation_tokens(getattr(user, "occupation", "") or "")
+def llm_shortlist(
+    candidates: list[SourceItem], user: User, topics: list[str], pref: Preference | None = None
+) -> list[SourceItem]:
+    job = _job_tokens(user, pref)
     band = age_band(getattr(user, "birth_date", None))
     if band:
         job = [*job, band]
@@ -287,8 +315,14 @@ def _format_body(
     _ = topics
     picked = max(len(items), 1)
     when = now or datetime.now(ZoneInfo(SEOUL))
+    from app.services.roles import parse_role_settings, parse_roles, pick_digest_assistant
+
+    roles = parse_roles(getattr(pref, "roles", "") or "")
+    settings = parse_role_settings(getattr(pref, "role_settings", "") or "{}")
+    local = when.astimezone(ZoneInfo(SEOUL)) if when.tzinfo else when.replace(tzinfo=ZoneInfo(SEOUL))
+    assistant = pick_digest_assistant(roles, settings, day=local.timetuple().tm_yday, hour=local.hour)
     lines: list[str] = [
-        greeting_line(name, now=when),
+        digest_opening_line(name, assistant, now=when),
         f"오늘 {n}개 중에 고른 {picked}개입니다.",
         "",
     ]
@@ -488,7 +522,8 @@ def _llm_curate(
         "메타 코멘트(예: '15분짜리')만 쓰지 마세요.\n"
         "후보 summary가 있으면 그걸 다듬어 blurb로 쓰고, 없으면 title을 바탕으로 요약을 만듭니다.\n"
         "독자에게 보이는 한국어(title·blurb·insight_q)는 기본으로 합니다/습니다 체를 씁니다. "
-        "-다 체(한다/이다/됐다)와 반말은 쓰지 마세요. 커스터마이징에 다른 말투가 있으면 그걸 우선합니다.\n"
+        "-다 체(한다/이다/됐다)와 반말은 쓰지 마세요. 커스터마이징에 다른 말투가 있으면 그걸 우선합니다. "
+        "어시스턴트 성격(아래 대표 인간상)이 title·blurb·insight_q 문장 선택과 어휘에 드러나게 쓰세요.\n"
         "후보 줄의 why는 사이트별 선정 신호입니다(급상승·공식 블로그·조회수 하한 등). "
         "이 신호를 보고 고르세요. 조회수·좋아요·저자를 지어내지 마세요.\n"
         f"{insight_rules}"
@@ -497,7 +532,7 @@ def _llm_curate(
         f"{insight_json}"
         "}]}\n"
         f"수신자: {user.display_name}\n"
-        f"{profile_brief(user)}\n"
+        f"{profile_brief(user, pref)}\n"
         f"관심 주제: {topics}\n"
         f"커스터마이징: {custom}\n"
         f"후보:\n{candidates_as_prompt_block(candidates)}\n"
@@ -627,7 +662,7 @@ def build_digest_preview(
     _emit(on_progress, "crawl")
     crawl_started = perf_counter()
     raw = shared_candidates if shared_candidates is not None else gather_candidates(topics, preferred_sites=sites)
-    candidates = personalize_candidates(raw, user)
+    candidates = personalize_candidates(raw, user, pref)
     crawl_ms = elapsed_ms(crawl_started)
 
     layer_ms: dict[str, int] = {"llm_ms": 0, "aggregation_ms": 0, "format_ms": 0}
@@ -636,7 +671,7 @@ def build_digest_preview(
         db,
         user,
         pref,
-        llm_shortlist(candidates, user, topics),
+        llm_shortlist(candidates, user, topics, pref),
         timings=layer_ms,
         on_progress=on_progress,
         pool=candidates,

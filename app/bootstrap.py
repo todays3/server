@@ -52,6 +52,10 @@ def ensure_schema() -> None:
                 conn.execute(
                     text("ALTER TABLE preferences ADD COLUMN insight_questions BOOLEAN DEFAULT 0")
                 )
+            if "roles" not in pref_cols:
+                conn.execute(text("ALTER TABLE preferences ADD COLUMN roles TEXT DEFAULT ''"))
+            if "role_settings" not in pref_cols:
+                conn.execute(text("ALTER TABLE preferences ADD COLUMN role_settings TEXT DEFAULT '{}'"))
 
         crawl_rows = conn.execute(text("PRAGMA table_info(crawl_runs)")).fetchall()
         if crawl_rows:
@@ -97,6 +101,12 @@ def ensure_schema() -> None:
                 conn.execute(text("ALTER TABLE kakao_accounts ADD COLUMN access_expires_at DATETIME"))
             if "refresh_expires_at" not in kakao_cols:
                 conn.execute(text("ALTER TABLE kakao_accounts ADD COLUMN refresh_expires_at DATETIME"))
+
+        note_rows = conn.execute(text("PRAGMA table_info(sticky_notes)")).fetchall()
+        if note_rows:
+            note_cols = {row[1] for row in note_rows}
+            if "kind" not in note_cols:
+                conn.execute(text("ALTER TABLE sticky_notes ADD COLUMN kind VARCHAR(32) DEFAULT 'suggestion'"))
 
 
 def _delete_user_by_email(db: Session, email: str) -> None:

@@ -99,10 +99,32 @@ class SendTimeSlot(BaseModel):
     minute: int = Field(ge=0, le=59)
 
 
+class RoleSettingsOut(BaseModel):
+    job_seeker_targets: list[str] = Field(default_factory=list)
+    job_seeker_level: Literal["intern", "new", "experienced"] = "new"
+    investor_market: Literal["국내증시", "미국증시"] = "국내증시"
+    investor_themes: list[str] = Field(default_factory=list)
+    assistant_names: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("assistant_names")
+    @classmethod
+    def assistant_names_clean(cls, value: dict[str, str]) -> dict[str, str]:
+        allowed = {"investor", "developer", "doctor", "semiconductor", "job_seeker"}
+        cleaned: dict[str, str] = {}
+        for key, name in value.items():
+            role = str(key).strip()
+            label = str(name).strip()[:20]
+            if role in allowed and label:
+                cleaned[role] = label
+        return cleaned
+
+
 class PreferenceUpdate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     topics: list[str] | None = None
+    roles: list[str] | None = None
+    role_settings: RoleSettingsOut | None = None
     tone: str | None = Field(default=None, max_length=64)  # deprecated
     send_hour: int | None = Field(default=None, ge=0, le=23)
     send_minute: int | None = Field(default=None, ge=0, le=59)
@@ -121,6 +143,24 @@ class PreferenceUpdate(BaseModel):
         cleaned = [t.strip() for t in value if t and t.strip()]
         if len(cleaned) > 60:
             raise ValueError("관심 주제는 최대 60개입니다")
+        return cleaned
+
+    @field_validator("roles")
+    @classmethod
+    def roles_valid(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return value
+        allowed = {"investor", "developer", "doctor", "semiconductor", "job_seeker"}
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for role in value:
+            role = role.strip()
+            if not role or role not in allowed or role in seen:
+                continue
+            seen.add(role)
+            cleaned.append(role)
+        if not cleaned:
+            raise ValueError("어시스턴트를 하나 이상 선택하세요")
         return cleaned
 
     @field_validator("sources")
@@ -147,6 +187,8 @@ class PreferenceUpdate(BaseModel):
 
 class PreferenceOut(BaseModel):
     topics: list[str]
+    roles: list[str] = Field(default_factory=list)
+    role_settings: RoleSettingsOut = Field(default_factory=RoleSettingsOut)
     tone: str
     send_hour: int
     send_minute: int
@@ -479,7 +521,24 @@ class StickyNoteOut(BaseModel):
     id: int
     nickname: str
     body: str
+    kind: str = "suggestion"
     created_at: datetime
+
+
+class AdminUpdateIn(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    body: str = Field(min_length=1, max_length=800)
+
+
+class AdminUpdateOut(BaseModel):
+    id: int
+    nickname: str
+    body: str
+    kind: str
+    created_at: datetime
+    push_sent: int = 0
+    device_count: int = 0
 
 
 class LatencyListOut(BaseModel):

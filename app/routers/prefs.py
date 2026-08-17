@@ -6,7 +6,8 @@ from sqlalchemy.orm import Session
 from app.auth import get_current_user
 from app.db import get_db
 from app.models import Preference, User
-from app.schemas import PreferenceOut, PreferenceUpdate, SendTimeSlot
+from app.schemas import PreferenceOut, PreferenceUpdate, RoleSettingsOut, SendTimeSlot
+from app.services.roles import encode_role_settings, encode_roles, parse_role_settings, parse_roles
 from app.services.send_times import encode_send_times, normalize_slots, parse_send_times_raw
 
 router = APIRouter(prefix="/prefs", tags=["prefs"])
@@ -19,6 +20,8 @@ def _pref_out(pref: Preference) -> PreferenceOut:
     first = slots[0]
     return PreferenceOut(
         topics=topics,
+        roles=parse_roles(pref.roles or ""),
+        role_settings=RoleSettingsOut.model_validate(parse_role_settings(pref.role_settings or "{}")),
         tone=pref.tone,
         send_hour=first.hour,
         send_minute=first.minute,
@@ -68,6 +71,11 @@ def update_prefs(
         if not topics:
             raise HTTPException(status_code=400, detail="관심 주제를 하나 이상 선택하세요")
         pref.topics = ",".join(topics)
+    if "roles" in data and data["roles"] is not None:
+        pref.roles = encode_roles(data.pop("roles"))
+    role_settings = data.pop("role_settings", None)
+    if role_settings is not None:
+        pref.role_settings = encode_role_settings(dict(role_settings))
     if "sources" in data and data["sources"] is not None:
         sources = [s.strip() for s in data.pop("sources") if s and s.strip()]
         pref.sources = ",".join(sources)

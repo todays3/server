@@ -43,3 +43,26 @@ def greeting_line(name: str, *, now: datetime) -> str:
     label = (name or "당신").strip() or "당신"
     pick = (local.timetuple().tm_yday + hour + len(label)) % len(options)
     return options[pick].format(name=label)
+
+
+_INTRO_PATTERNS: tuple[str, ...] = (
+    "{assistant}입니다.",
+    "오늘 브리프 드릴 {assistant}입니다.",
+    "{assistant}이에요.",
+    "하루만장 비서 {assistant}입니다.",
+    "안녕하세요, {assistant}입니다.",
+    "브리프 전달해 드릴 {assistant}입니다.",
+    "오늘도 함께할 {assistant}입니다.",
+    "짧게 정리해 드릴 {assistant}입니다.",
+    "나와의 채팅에 온 {assistant}입니다.",
+)
+
+
+def digest_opening_line(user_name: str, assistant_name: str, *, now: datetime) -> str:
+    """Assistant self-intro plus time-of-day hello to the user."""
+    assistant = (assistant_name or "하루").strip() or "하루"
+    local = now.astimezone(SEOUL) if now.tzinfo else now.replace(tzinfo=SEOUL)
+    user_line = greeting_line(user_name, now=now)
+    pick = (local.timetuple().tm_yday + local.hour + len(assistant)) % len(_INTRO_PATTERNS)
+    intro = _INTRO_PATTERNS[pick].format(assistant=assistant)
+    return f"{intro} {user_line}"
