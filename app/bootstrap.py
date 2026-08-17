@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import SessionLocal, engine, apply_sqlite_pragmas
-from app.models import CrawlRun, Digest, KakaoAccount, LlmUsage, Preference, PushDevice, StickyNote, User
+from app.models import CrawlRun, Digest, KakaoAccount, LlmUsage, Preference, PushDevice, StickyNote, StickyNoteLike, User
 
 
 def ensure_schema() -> None:
@@ -93,6 +93,14 @@ def ensure_schema() -> None:
             dig_cols = {row[1] for row in dig_rows}
             if "items_json" not in dig_cols:
                 conn.execute(text("ALTER TABLE digests ADD COLUMN items_json TEXT DEFAULT '[]'"))
+            if "attempt_count" not in dig_cols:
+                conn.execute(text("ALTER TABLE digests ADD COLUMN attempt_count INTEGER DEFAULT 0"))
+            if "next_retry_at" not in dig_cols:
+                conn.execute(text("ALTER TABLE digests ADD COLUMN next_retry_at DATETIME"))
+            if "chunks_sent" not in dig_cols:
+                conn.execute(text("ALTER TABLE digests ADD COLUMN chunks_sent INTEGER DEFAULT 0"))
+            if "miss_notified" not in dig_cols:
+                conn.execute(text("ALTER TABLE digests ADD COLUMN miss_notified BOOLEAN DEFAULT 0"))
 
         kakao_rows = conn.execute(text("PRAGMA table_info(kakao_accounts)")).fetchall()
         if kakao_rows:
@@ -114,6 +122,7 @@ def _delete_user_by_email(db: Session, email: str) -> None:
     if user is None:
         return
     uid = user.id
+    db.query(StickyNoteLike).filter(StickyNoteLike.user_id == uid).delete()
     db.query(StickyNote).filter(StickyNote.user_id == uid).delete()
     db.query(PushDevice).filter(PushDevice.user_id == uid).delete()
     db.query(CrawlRun).filter(CrawlRun.user_id == uid).delete()

@@ -58,8 +58,14 @@ class Settings(BaseSettings):
     rate_limit_auth_window_seconds: float = 60.0
     rate_limit_hooks_max: int = 60
     rate_limit_hooks_window_seconds: float = 60.0
-    rate_limit_notes_max: int = 8
+    rate_limit_notes_max: int = 3
     rate_limit_notes_window_seconds: float = 60.0
+    rate_limit_note_hearts_max: int = 30
+    rate_limit_note_hearts_window_seconds: float = 60.0
+    notes_daily_max: int = 5
+    notes_min_interval_seconds: float = 120.0
+    notes_max_open: int = 20
+    notes_duplicate_window_hours: float = 24.0
 
     youtube_api_key: str = ""
 

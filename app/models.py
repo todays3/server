@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -27,6 +27,7 @@ class User(Base):
     digests: Mapped[list["Digest"]] = relationship(back_populates="user")
     push_devices: Mapped[list["PushDevice"]] = relationship(back_populates="user")
     sticky_notes: Mapped[list["StickyNote"]] = relationship(back_populates="user")
+    sticky_note_likes: Mapped[list["StickyNoteLike"]] = relationship(back_populates="user")
 
 
 class Preference(Base):
@@ -81,6 +82,10 @@ class Digest(Base):
     error_message: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    chunks_sent: Mapped[int] = mapped_column(Integer, default=0)
+    miss_notified: Mapped[bool] = mapped_column(Boolean, default=False)
     # JSON array of curated items for structured clients
     items_json: Mapped[str] = mapped_column(Text, default="[]")
 
@@ -151,6 +156,22 @@ class StickyNote(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
     user: Mapped[User] = relationship(back_populates="sticky_notes")
+    likes: Mapped[list["StickyNoteLike"]] = relationship(back_populates="note", cascade="all, delete-orphan")
+
+
+class StickyNoteLike(Base):
+    """One heart per user per note. UniqueConstraint is the idempotency lock."""
+
+    __tablename__ = "sticky_note_likes"
+    __table_args__ = (UniqueConstraint("note_id", "user_id", name="uq_sticky_note_like_user"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    note_id: Mapped[int] = mapped_column(ForeignKey("sticky_notes.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    note: Mapped[StickyNote] = relationship(back_populates="likes")
+    user: Mapped[User] = relationship(back_populates="sticky_note_likes")
 
 
 class LlmUsage(Base):

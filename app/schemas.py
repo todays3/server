@@ -104,12 +104,33 @@ class RoleSettingsOut(BaseModel):
     job_seeker_level: Literal["intern", "new", "experienced"] = "new"
     investor_market: Literal["국내증시", "미국증시"] = "국내증시"
     investor_themes: list[str] = Field(default_factory=list)
+    music_genres: list[str] = Field(default_factory=list)
+    book_genres: list[str] = Field(default_factory=list)
+    movie_genres: list[str] = Field(default_factory=list)
+    otaku_anime_genres: list[str] = Field(default_factory=list)
+    otaku_ln_genres: list[str] = Field(default_factory=list)
+    otaku_manga_genres: list[str] = Field(default_factory=list)
+    gaming_genres: list[str] = Field(default_factory=list)
+    performing_arts_genres: list[str] = Field(default_factory=list)
+    theater_genres: list[str] = Field(default_factory=list)
     assistant_names: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("assistant_names")
     @classmethod
     def assistant_names_clean(cls, value: dict[str, str]) -> dict[str, str]:
-        allowed = {"investor", "developer", "doctor", "semiconductor", "job_seeker"}
+        allowed = {
+            "investor",
+            "developer",
+            "doctor",
+            "semiconductor",
+            "job_seeker",
+            "music",
+            "reader",
+            "movie",
+            "otaku",
+            "gaming",
+            "performing_arts",
+        }
         cleaned: dict[str, str] = {}
         for key, name in value.items():
             role = str(key).strip()
@@ -150,7 +171,19 @@ class PreferenceUpdate(BaseModel):
     def roles_valid(cls, value: list[str] | None) -> list[str] | None:
         if value is None:
             return value
-        allowed = {"investor", "developer", "doctor", "semiconductor", "job_seeker"}
+        allowed = {
+            "investor",
+            "developer",
+            "doctor",
+            "semiconductor",
+            "job_seeker",
+            "music",
+            "reader",
+            "movie",
+            "otaku",
+            "gaming",
+            "performing_arts",
+        }
         cleaned: list[str] = []
         seen: set[str] = set()
         for role in value:
@@ -180,8 +213,8 @@ class PreferenceUpdate(BaseModel):
             return value
         if len(value) < 1:
             raise ValueError("발송 시간을 하나 이상 설정하세요")
-        if len(value) > 5:
-            raise ValueError("발송 시간은 최대 5개입니다")
+        if len(value) > 3:
+            raise ValueError("발송 시간은 최대 3개입니다")
         return value
 
 
@@ -222,6 +255,10 @@ class DigestOut(BaseModel):
     error_message: str
     created_at: datetime
     sent_at: datetime | None
+    attempt_count: int = 0
+    next_retry_at: datetime | None = None
+    chunks_sent: int = 0
+    can_resend: bool = False
     items: list[DigestItemOut] = Field(default_factory=list)
 
 
@@ -361,6 +398,15 @@ class AdminUsageEvent(BaseModel):
     success: bool
     error_message: str
     created_at: datetime
+    delivery_status: str = ""
+    attempt_count: int = 0
+
+
+class AdminRecentCallList(BaseModel):
+    items: list[AdminUsageEvent]
+    total: int
+    page: int
+    page_size: int
 
 
 class AdminPrefDetail(BaseModel):
@@ -389,6 +435,26 @@ class AdminUserDetail(BaseModel):
     usage_today: AdminUsageSummary
 
 
+class AdminSendSlotBucket(BaseModel):
+    label: str
+    hour: int
+    minute: int
+    count: int
+
+
+class AdminSendSlotCountBucket(BaseModel):
+    slots: int
+    count: int
+
+
+class AdminSendScheduleStats(BaseModel):
+    users_with_prefs: int = 0
+    enabled: int = 0
+    disabled: int = 0
+    times: list[AdminSendSlotBucket] = Field(default_factory=list)
+    slot_counts: list[AdminSendSlotCountBucket] = Field(default_factory=list)
+
+
 class AdminOverview(BaseModel):
     users_total: int
     users_pending: int
@@ -405,6 +471,7 @@ class AdminOverview(BaseModel):
     last_run_rss_delta_bytes: int = 0
     runs_cpu_peak_max_percent: int = 0
     runs_rss_peak_max_bytes: int = 0
+    send_schedule: AdminSendScheduleStats = Field(default_factory=AdminSendScheduleStats)
 
 
 class SourceFeedProbeOut(BaseModel):
@@ -447,6 +514,7 @@ class RefSiteOut(BaseModel):
     label: str
     blurb: str
     url: str
+    dau: int = Field(description="Estimated daily active users for UI sorting")
 
 
 class RefSiteGroupOut(BaseModel):
@@ -484,6 +552,7 @@ class LatencyLayerOut(BaseModel):
     label: str
     p50_ms: int = 0
     p90_ms: int = 0
+    p95_ms: int = 0
     mean_ms: int = 0
 
 
@@ -523,6 +592,19 @@ class StickyNoteOut(BaseModel):
     body: str
     kind: str = "suggestion"
     created_at: datetime
+    like_count: int = 0
+    liked: bool = False
+    mine: bool = False
+
+
+class StickyNoteHeartIn(BaseModel):
+    liked: bool
+
+
+class StickyNotePatch(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    body: str = Field(min_length=1, max_length=800)
 
 
 class AdminUpdateIn(BaseModel):
