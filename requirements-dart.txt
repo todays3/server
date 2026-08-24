@@ -1,0 +1,6 @@
+# Optional DART PDF extraction. Native wheels; do not add to the main image/CI.
+# pip install -r requirements-dart.txt
+#
+# OCR stays off (DART_OCR_ENABLED=false). If you enable it, install pytesseract
+# and poppler yourself — do not load them on the 16GB host by default.
+pdf-inspector>=1.14.0
