@@ -1,0 +1,4 @@
+# Optional. Do not install on the 16GB host unless AGENT_FAISS_ENABLED=true
+# and you have ~2GiB free RAM. Forces CPU; do not use faiss-gpu on GTX 1050.
+sentence-transformers==3.4.1
+faiss-cpu==1.10.0
