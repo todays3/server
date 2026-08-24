@@ -73,6 +73,45 @@ async def test_put_prefs_stores_assistant_names(client: AsyncClient, db_session)
 
 
 @pytest.mark.asyncio
+async def test_put_prefs_stores_investor_match_stock_flag(client: AsyncClient, db_session):
+    res = await client.put(
+        "/api/v1/prefs",
+        headers=_auth(db_session),
+        json={
+            "roles": ["investor"],
+            "role_settings": {"investor_match_stock": False, "investor_market": "국내증시"},
+            "topics": ["경제/주식/국내증시/반도체"],
+        },
+    )
+    assert res.status_code == 200
+    assert res.json()["role_settings"]["investor_match_stock"] is False
+    got = await client.get("/api/v1/prefs", headers=_auth(db_session))
+    assert got.json()["role_settings"]["investor_match_stock"] is False
+
+
+@pytest.mark.asyncio
+async def test_put_prefs_accepts_stock_analyst_role(client: AsyncClient, db_session):
+    res = await client.put(
+        "/api/v1/prefs",
+        headers=_auth(db_session),
+        json={
+            "roles": ["stock_analyst"],
+            "role_settings": {
+                "investor_market": "국내증시",
+                "investor_themes": ["반도체"],
+                "assistant_names": {"stock_analyst": "도윤"},
+            },
+            "topics": ["경제/주식/국내증시/반도체"],
+        },
+    )
+    assert res.status_code == 200
+    assert res.json()["roles"] == ["stock_analyst"]
+    assert res.json()["role_settings"]["assistant_names"]["stock_analyst"] == "도윤"
+    got = await client.get("/api/v1/prefs", headers=_auth(db_session))
+    assert got.json()["roles"] == ["stock_analyst"]
+
+
+@pytest.mark.asyncio
 async def test_put_prefs_rejects_empty_roles(client: AsyncClient, db_session):
     res = await client.put(
         "/api/v1/prefs",

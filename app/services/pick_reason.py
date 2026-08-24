@@ -1,157 +1,153 @@
-"""Short, honest 'why we picked this' labels — site signals, not invented stats."""
+"""Quantitative 'why we picked this' — only numbers we actually have."""
 
 from __future__ import annotations
 
+import re
+from datetime import datetime, timezone
+
+from app.catalog.ref_sites import site_dau
+from app.services.curate_limits import MAX_CONTENT_AGE_HOURS
 from app.services.sources import SourceItem
 
-MAX_WHY = 36
+MAX_WHY = 48
+YOUTUBE_VIEW_FLOOR = 10_000
 
 KIND_WHY: dict[str, str] = {
-    "유튜브": "조회수 1만+ 영상",
-    "커뮤니티": "커뮤니티 인기글",
-    "아티클": "피드 상위 기사",
+    "유튜브": f"조회 {YOUTUBE_VIEW_FLOOR // 10_000}만+",
+    "커뮤니티": f"{MAX_CONTENT_AGE_HOURS}시간 이내",
+    "아티클": f"{MAX_CONTENT_AGE_HOURS}시간 이내",
 }
 
-# What this collector actually samples (front page / official / trending lists).
-SITE_WHY: dict[str, str] = {
-    "naver-finance": "네이버증권 주요뉴스",
-    "toss-securities": "토스증권 콘텐츠",
-    "kakao-stock": "카카오페이증권 이슈",
-    "dart": "DART 공식 공시",
-    "hankyung": "한경 헤드라인",
-    "mk-stock": "매경 증권 헤드라인",
-    "sampro": "조회수 1만+ 시황",
-    "yahoo-finance": "야후파이낸스 헤드라인",
-    "investing": "Investing 시황",
-    "bloomberg": "블룸버그 헤드라인",
-    "reuters": "로이터 헤드라인",
-    "cnbc": "CNBC 헤드라인",
-    "reddit-stocks": "레딧 주식 인기글",
-    "seeking-alpha": "Seeking Alpha 분석",
-    "coindesk": "코인데스크 헤드라인",
-    "cointelegraph": "코인텔레그래프 헤드라인",
-    "the-block": "The Block 헤드라인",
-    "quantstart": "QuantStart 가이드",
-    "reddit-algotrading": "레딧 알고매매 인기",
-    "hn": "HN 프론트페이지",
-    "lobsters": "Lobsters 인기글",
-    "github-trending": "GitHub 오늘 트렌딩",
-    "stackoverflow": "SO 인기 질문",
-    "geeksforgeeks": "GFG 인기 가이드",
-    "velog": "벨로그 트렌딩",
-    "okky": "OKKY 인기글",
-    "techblogposts": "국내 기술블로그 모아보기",
-    "naver-d2": "NAVER D2 공식",
-    "qiita": "Qiita 트렌딩",
-    "zenn": "Zenn 트렌딩",
-    "producthunt": "Product Hunt 오늘",
-    "infoq": "InfoQ 주요 아티클",
-    "high-scalability": "스케일 아키텍처 글",
-    "netflix-tech": "Netflix 공식 기술블로그",
-    "uber-eng": "Uber 공식 기술블로그",
-    "cloudflare-blog": "Cloudflare 공식 블로그",
-    "geeknews": "긱뉴스 헤드라인",
-    "clien": "클리앙 인기글",
-    "hardbattle": "하드웨어배틀 이슈",
-    "itchosun": "IT조선 헤드라인",
-    "bloter": "블로터 헤드라인",
-    "outstanding": "아웃스탠딩 헤드라인",
-    "innoforest": "혁신의숲 스타트업",
-    "eo-planet": "EO 플래닛 콘텐츠",
-    "disquiet": "디스콰이엇 인기",
-    "design-compass": "디자인나침반 큐레이션",
-    "uibowl": "UIBowl 인기 UI",
-    "surfit": "서핏 트렌딩",
-    "behance": "Behance 주목작",
-    "dribbble": "Dribbble 인기샷",
-    "mobbin": "Mobbin 앱 UI",
-    "youtube-life": "조회수 1만+ 영상",
-    "brunch": "브런치 추천글",
-    "wanted": "원티드 커리어글",
-    "rocketpunch": "로켓펀치 채용·회사",
-    "naver-news": "네이버뉴스 헤드라인",
-    "arxiv-cs": "arXiv CS 프리프린트",
-    "acm-dl": "ACM 학술 DB",
-    "ieee-xplore": "IEEE Xplore 논문",
-    "usenix": "USENIX 학회",
-    "dblp": "DBLP 서지 정보",
-    "pubmed": "PubMed 논문",
-    "nejm": "NEJM 최신 논문",
-    "the-lancet": "The Lancet 헤드라인",
-    "jama": "JAMA Network",
-    "cochrane": "Cochrane 고찰",
-    "uptodate": "UpToDate 임상 요약",
-    "ieee-xplore-semi": "IEEE SSCS·EDS",
-    "isscc": "ISSCC 학회",
-    "iedm": "IEDM 학회",
-    "spie": "SPIE 광학·리소",
-    "sciencedirect": "ScienceDirect 저널",
-    "melon": "멜론·음악 차트",
-    "genie": "지니·음악 트렌드",
-    "bugs": "벅스·음악 트렌드",
-    "hanteo": "한터차트·음반",
-    "vibe": "VIBE·음악 트렌드",
-    "flo": "FLO·음악 트렌드",
-    "billboard": "Billboard 헤드라인",
-    "pitchfork": "Pitchfork 뉴스",
-    "spotify-news": "Spotify Newsroom",
-    "rolling-stone": "Rolling Stone",
-    "aladin": "알라딘·베스트",
-    "yes24": "YES24·신간",
-    "kyobo": "교보문고·신간",
-    "ridibooks": "리디·전자책",
-    "bookjournal": "북저널리즘",
-    "millie": "밀리의 서재",
-    "cgv": "CGV·상영작",
-    "lotte-cinema": "롯데시네마",
-    "megabox": "메가박스·상영",
-    "kobis": "KOBIS 박스오피스",
-    "cine21": "씨네21·영화뉴스",
-    "maxmovie": "맥스무비·영화",
-    "watcha-pedia": "왓챠피디아·영화",
-    "animenewsnetwork": "ANN 애니뉴스",
-    "myanimelist": "MyAnimeList",
-    "anilist": "AniList·애니",
-    "syosetu": "なろう·웹소설",
-    "kakao-page": "카카오페이지",
-    "naver-webtoon": "네이버 웹툰",
-    "comic-walker": "Comic Walker",
-    "lezhin": "Lezhin Comics",
-    "inven": "인벤·게임뉴스",
-    "ruliweb": "루리웹·게임",
-    "naver-game": "네이버 게임",
-    "thisisgame": "디스이즈게임즈",
-    "gamemeca": "게임메카·뉴스",
-    "game-donga": "게임동아",
-    "steam-news": "Steam News",
-    "ign": "IGN·게임뉴스",
-    "gamespot": "GameSpot",
-    "kotaku": "Kotaku·게임",
-    "polygon": "Polygon·뉴스",
-    "pc-gamer": "PC Gamer",
-    "rock-paper-shotgun": "Rock Paper Shotgun",
-    "eurogamer": "Eurogamer",
-    "playdb": "PlayDB·공연소식",
-    "kopis": "KOPIS 공연통계",
-    "interpark-ticket": "인터파크 티켓",
-    "melon-ticket": "멜론티켓·공연",
-    "yes24-ticket": "예스24 티켓",
-    "ticketlink": "티켓링크·공연",
-    "ntok": "국립극장 공연",
-    "sejongpac": "세종문화회관",
-    "sac": "예술의전당",
-    "lgart": "LG아트센터",
-    "themusical": "더뮤지컬·뉴스",
-    "culture-portal": "문화포털·공연",
-}
+# Kept so every catalog site still has a documented collector signal.
+SITE_WHY: dict[str, str] = {}
+
+_POINTS = re.compile(
+    r"(?:points?|점수|추천|공감|좋아요)\s*[:=]?\s*([\d,]{1,11})|([\d,]{1,11})\s+points?",
+    re.I,
+)
+_COMMENTS = re.compile(
+    r"(?:#\s*)?(?:comments?|댓글)\s*[:=]?\s*([\d,]{1,11})|([\d,]{1,11})\s+comments?",
+    re.I,
+)
+_VIEWS = re.compile(
+    r"(?:조회수?|view(?:s|count)?)\s*[:=]?\s*([\d,]{1,11})|([\d,]{1,11})\s+views?\b",
+    re.I,
+)
 
 
 def clip_why(text: str) -> str:
     return (text or "").strip()[:MAX_WHY]
 
 
-def compose_pick_reason(item: SourceItem, *, job_match: bool = False) -> str:
-    base = SITE_WHY.get(item.site_id) or KIND_WHY.get(item.kind) or "오늘 후보 중 선별"
-    if job_match:
-        base = f"{base}·직무"
-    return clip_why(base)
+def format_compact_int(value: int) -> str:
+    n = max(0, int(value))
+    if n >= 100_000_000:
+        text = f"{n / 100_000_000:.1f}".rstrip("0").rstrip(".")
+        return f"{text}억"
+    if n >= 10_000:
+        text = f"{n / 10_000:.1f}".rstrip("0").rstrip(".")
+        return f"{text}만"
+    return str(n)
+
+
+def parse_metric_int(raw: str | None) -> int | None:
+    if not raw:
+        return None
+    digits = str(raw).replace(",", "").strip()
+    if not digits.isdigit():
+        return None
+    return int(digits)
+
+
+def views_from_text(*parts: str) -> int | None:
+    blob = " ".join(part for part in parts if part)
+    if not blob:
+        return None
+    hit = _VIEWS.search(blob)
+    if not hit:
+        return None
+    return parse_metric_int(hit.group(1) or hit.group(2))
+
+
+def engagement_from_text(*parts: str) -> tuple[int | None, int | None]:
+    blob = " ".join(part for part in parts if part)
+    if not blob:
+        return None, None
+    points = None
+    comments = None
+    hit = _POINTS.search(blob)
+    if hit:
+        points = parse_metric_int(hit.group(1) or hit.group(2))
+    hit = _COMMENTS.search(blob)
+    if hit:
+        comments = parse_metric_int(hit.group(1) or hit.group(2))
+    return points, comments
+
+
+def age_label(published_at: datetime | None, *, now: datetime | None = None) -> str | None:
+    if published_at is None:
+        return None
+    current = now or datetime.now(timezone.utc)
+    when = published_at if published_at.tzinfo else published_at.replace(tzinfo=timezone.utc)
+    moment = current if current.tzinfo else current.replace(tzinfo=timezone.utc)
+    seconds = (moment.astimezone(timezone.utc) - when.astimezone(timezone.utc)).total_seconds()
+    if seconds < 0:
+        return "1시간 내"
+    hours = seconds / 3600
+    if hours < 1:
+        return "1시간 내"
+    if hours < 24:
+        return f"{int(hours)}시간 전"
+    days = int(hours / 24)
+    if days <= 2:
+        return f"{days}일 전"
+    return None
+
+
+def compose_pick_reason(
+    item: SourceItem,
+    *,
+    job_match: bool = False,
+    job_hits: int | None = None,
+    topic_hits: int | None = None,
+    now: datetime | None = None,
+) -> str:
+    parts: list[str] = []
+    views = getattr(item, "views", None)
+    if views:
+        parts.append(f"조회 {format_compact_int(views)}")
+    points = getattr(item, "points", None)
+    if points:
+        parts.append(f"점수 {format_compact_int(points)}")
+    comments = getattr(item, "comments", None)
+    if comments:
+        parts.append(f"댓글 {format_compact_int(comments)}")
+    age = age_label(item.published_at, now=now)
+    if age:
+        parts.append(age)
+    rank = getattr(item, "list_rank", None)
+    if rank and 1 <= int(rank) <= 10:
+        parts.append(f"피드 {int(rank)}위")
+    hits_job = job_hits if job_hits is not None else getattr(item, "job_hits", 0)
+    hits_topic = topic_hits if topic_hits is not None else getattr(item, "topic_hits", 0)
+    if job_match and not hits_job:
+        hits_job = max(1, int(hits_job or 0))
+    if hits_topic:
+        parts.append(f"주제 {int(hits_topic)}일치")
+    if hits_job:
+        parts.append(f"직무 {int(hits_job)}일치")
+    if not parts:
+        dau = site_dau(item.site_id) if item.site_id else 0
+        if dau:
+            parts.append(f"DAU {format_compact_int(dau)}")
+        elif item.kind == "유튜브":
+            parts.append(KIND_WHY["유튜브"])
+        else:
+            parts.append(KIND_WHY.get(item.kind) or f"{MAX_CONTENT_AGE_HOURS}시간 이내")
+    packed: list[str] = []
+    for part in parts:
+        candidate = "·".join(packed + [part])
+        if packed and len(candidate) > MAX_WHY:
+            break
+        packed.append(part)
+    return clip_why("·".join(packed))

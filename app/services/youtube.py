@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import httpx
 
+from dataclasses import replace
 from app.config import get_settings
 from app.services.freshness import is_fresh, parse_datetime
 
@@ -180,7 +181,7 @@ def fetch_channel_videos(channel_id: str, label: str, *, limit: int = 5) -> list
             continue
         if not is_fresh(row.published_at):
             continue
-        items.append(row)
+        items.append(replace(row, views=counts.get(vid), list_rank=len(items) + 1))
         if len(items) >= limit:
             break
     return items
@@ -221,7 +222,7 @@ def search_videos(query: str, *, limit: int = 5) -> list:
             continue
         if not is_fresh(row.published_at):
             continue
-        items.append(row)
+        items.append(replace(row, views=counts.get(vid), list_rank=len(items) + 1))
         if len(items) >= limit:
             break
     return items

@@ -3,5 +3,6 @@
 GATHER_MAX_ITEMS = 100
 GATHER_FETCH_CAP = 200
 LLM_SHORTLIST_MAX = 18
+SHORTLIST_MAX_PER_SITE = 2
 # Hard cutoff: this product is a same-day trend brief, not an evergreen roundup.
 MAX_CONTENT_AGE_HOURS = 48

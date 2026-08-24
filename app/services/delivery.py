@@ -15,8 +15,9 @@ from app.services.delivery_policy import (
     schedule_retry,
     should_attempt_delivery,
 )
+from app.services.delivery_trace import append_delivery_trace
 from app.services.fcm import notify_digest_sent
-from app.services.kakao import send_digest_via_kakao
+from app.services.kakao import send_digest_via_kakao, split_memo_chunks
 from app.services.pipeline_timing import elapsed_ms, total_ms
 from app.services.run_resources import apply_peak_to_run, peak_sampler
 
@@ -96,6 +97,18 @@ async def deliver_digest(
     db.commit()
     db.refresh(digest)
 
+    chunk_total = len(split_memo_chunks(digest.title, digest.body))
+    append_delivery_trace(
+        digest,
+        step="attempt_start",
+        ok=True,
+        chunks_sent=int(digest.chunks_sent or 0),
+        chunk_total=chunk_total,
+        note=f"attempt {digest.attempt_count}",
+    )
+    db.add(digest)
+    db.commit()
+
     started = perf_counter()
     with peak_sampler() as peak:
         ok, err, chunks_sent = await send_digest_via_kakao(
@@ -111,6 +124,7 @@ async def deliver_digest(
 
     digest.chunks_sent = chunks_sent
     finished = datetime.now(timezone.utc)
+    success_note = err if ok and err else ""
 
     if ok:
         digest.status = "sent"
@@ -118,6 +132,14 @@ async def deliver_digest(
         digest.next_retry_at = None
         digest.sent_at = finished
         notify_digest_sent(db, user.id, digest.title, digest.body)
+    elif chunks_sent > 0:
+        digest.status = "partial"
+        digest.error_message = f"{chunks_sent}/{chunk_total} 청크 전송 후 실패: {err}"
+        digest.sent_at = None
+        if is_retryable_error(err) and schedule_retry(digest, finished):
+            pass
+        else:
+            digest.next_retry_at = None
     else:
         digest.status = "failed"
         digest.error_message = err
@@ -126,6 +148,16 @@ async def deliver_digest(
             pass
         else:
             digest.next_retry_at = None
+
+    append_delivery_trace(
+        digest,
+        step="kakao_send",
+        ok=ok,
+        error="" if ok else err,
+        chunks_sent=chunks_sent,
+        chunk_total=chunk_total,
+        note=success_note,
+    )
 
     timed = apply_send_timing(
         db,

@@ -10,16 +10,32 @@ def test_roles_profile_brief_includes_persona_voice():
         ["developer", "investor"],
         parse_role_settings('{"assistant_names":{"developer":"민준"}}'),
     )
-    assert "시니어 소프트웨어 개발자" in brief
-    assert "말투:" in brief
-    assert "개미 투자자" in brief
+    assert "senior software" in brief.lower()
+    assert "Voice:" in brief
+    assert "latest tech" in brief.lower() or "tech trend" in brief.lower()
+    assert "verified" in brief.lower()
+    assert "hiring" in brief.lower() or "move" in brief.lower()
+    assert "retail investor" in brief.lower()
     assert "번갈아" not in brief
-    assert "각 어시스턴트마다 소식 3개" in brief
+    assert "separately" in brief.lower()
+    assert "1 listed stock" in brief or "one listed stock" in brief.lower()
+
+
+def test_developer_brief_puts_latest_trend_first():
+    brief = roles_profile_brief(
+        ["developer"],
+        parse_role_settings('{"assistant_names":{"developer":"민준"}}'),
+    )
+    assert "Priority" in brief or "priority" in brief.lower()
+    assert "evergreen" in brief.lower()
+    assert "인물" in brief
+    assert "흐름" in brief
 
 
 def test_assistant_persona_has_all_roles():
     for role in (
         "investor",
+        "stock_analyst",
         "developer",
         "doctor",
         "semiconductor",
@@ -43,11 +59,10 @@ def test_performing_arts_brief_asks_for_three_show_urls():
             '{"performing_arts_genres":["뮤지컬","연극"],"assistant_names":{"performing_arts":"예린"}}'
         ),
     )
-    assert "극예술 큐레이터" in brief
+    assert "performing-arts" in brief.lower() or "performing arts" in brief.lower()
     assert "뮤지컬" in brief
     assert "연극" in brief
-    assert "3개" in brief
-    assert "극예술" in brief
+    assert "3" in brief
 
 
 def test_legacy_theater_role_and_genres_migrate():
@@ -57,5 +72,19 @@ def test_legacy_theater_role_and_genres_migrate():
         roles,
         parse_role_settings('{"theater_genres":["뮤지컬"],"assistant_names":{"theater":"예린"}}'),
     )
-    assert "극예술" in brief
+    assert "극예술" in brief or "performing" in brief.lower()
     assert "뮤지컬" in brief
+
+
+def test_stock_analyst_brief_asks_for_one_stock_not_three_articles():
+    brief = roles_profile_brief(
+        ["stock_analyst"],
+        parse_role_settings(
+            '{"investor_market":"국내증시","investor_themes":["반도체"],"assistant_names":{"stock_analyst":"도윤"}}'
+        ),
+    )
+    assert "stock analyst" in brief.lower()
+    assert "도윤" in brief
+    assert "1 listed stock" in brief or "one listed stock" in brief.lower()
+    assert "Do not pick 3 articles" in brief
+    assert "not a buy" in brief.lower()

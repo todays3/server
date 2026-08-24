@@ -37,14 +37,16 @@ def test_ensure_shared_crawl_single_flight(monkeypatch):
     assert all(len(g) == 1 for g in got)
 
 
-def test_slice_shared_items_keeps_user_sites_and_untagged():
+def test_slice_shared_items_keeps_user_sites_drops_untagged():
     items = [
         _item("https://hn.example", "hn"),
         _item("https://stock.example", "naver-finance"),
         _item("https://topic.example", ""),
+        _item("https://topic-it.example", "topic-IT"),
     ]
-    sliced = pool.slice_shared_items(items, sites=["hn"], max_items=24)
+    sliced = pool.slice_shared_items(items, sites=["hn", "topic-IT"], max_items=24)
     urls = {i.url for i in sliced}
     assert "https://hn.example" in urls
-    assert "https://topic.example" in urls
+    assert "https://topic-it.example" in urls
+    assert "https://topic.example" not in urls
     assert "https://stock.example" not in urls

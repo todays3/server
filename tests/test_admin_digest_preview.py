@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import func, select
@@ -148,6 +150,33 @@ async def test_preview_returns_candidates_without_kakao_or_digest_row(
     after = db_session.scalar(select(func.count()).select_from(Digest)) or 0
     assert after == before
     assert kakao_calls == []
+
+
+@pytest.mark.asyncio
+async def test_preview_ndjson_streams_ping_and_done(client: AsyncClient, db_session, monkeypatch):
+    monkeypatch.setattr("app.services.digest.gather_candidates", _fake_candidates)
+    monkeypatch.setattr(
+        "app.services.digest._llm_curate",
+        lambda *_a, **_k: (None, "llm_not_configured", ""),
+    )
+    target = db_session.query(User).filter_by(email="user@example.com").one()
+    res = await client.post(
+        "/api/v1/admin/digests/preview",
+        json={"user_id": target.id, "send_kakao": False},
+        headers={
+            **_admin_header(db_session),
+            "Accept": "application/x-ndjson",
+        },
+    )
+    assert res.status_code == 200
+    assert "ndjson" in (res.headers.get("content-type") or "")
+    lines = [ln for ln in res.text.strip().split("\n") if ln.strip()]
+    assert len(lines) >= 2
+    events = [json.loads(ln) for ln in lines]
+    assert any(ev.get("type") == "ping" for ev in events)
+    done = next(ev for ev in events if ev.get("type") == "done")
+    assert done["preview"]["email"] == "user@example.com"
+    assert done["preview"]["sent_to_kakao"] is False
 
 
 @pytest.mark.asyncio

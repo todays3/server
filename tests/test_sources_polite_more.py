@@ -218,11 +218,18 @@ def test_sources_html_and_gather(monkeypatch):
     assert any("foo/bar" in i.url for i in gh_items)
 
     assert _primary_query([]) == "technology"
-    assert _primary_query(["경제/주식/all"]) == "technology"
+    assert _primary_query(["경제/주식/all"]) == "한국 주식 시장 시황"
+    assert _primary_query(["경제/주식/국내증시/반도체"]) == "한국 주식 시장 시황"
+    assert _primary_query(["반도체/기술동향/all"]) == "반도체 소자 공정 EUV 파운드리 수율"
     feeds = _feeds_for_topics([])
     assert feeds
+    # Semiconductor mega must not auto-pull equity tape feeds.
+    semi_feeds = _feeds_for_topics(["반도체/기술동향/all"])
+    assert all("주식" not in name and "markets" not in name.lower() for _, name, _ in semi_feeds)
+    assert _youtube_feeds_for_topics(["반도체/기술동향/all"]) == []
     yt = _youtube_feeds_for_topics(["연애"])
     assert yt
+    assert all(label != "삼프로TV" for _, label, _ in yt)
     assert _feeds_for_sites(["naver-finance", "missing"])
     block = candidates_as_prompt_block(
         [SourceItem(kind="아티클", title="t", url="https://a", summary="sum", source="s")]

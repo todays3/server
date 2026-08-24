@@ -40,6 +40,12 @@ def _roomy_rate_limits(monkeypatch):
     monkeypatch.setenv("NOTES_DAILY_MAX", "10000")
     monkeypatch.setenv("NOTES_MIN_INTERVAL_SECONDS", "0")
     monkeypatch.setenv("NOTES_MAX_OPEN", "10000")
+    monkeypatch.setenv("AGENT_ENRICHMENT_ENABLED", "false")
+    monkeypatch.setenv("AGENT_FAISS_ENABLED", "false")
+    monkeypatch.setenv("DART_INGEST_ENABLED", "false")
+    monkeypatch.setenv("DART_OCR_ENABLED", "false")
+    # Keep hybrid local-first coverage in unit tests; prod sets this true.
+    monkeypatch.setenv("LLM_DIGEST_PREFER_REMOTE", "false")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()

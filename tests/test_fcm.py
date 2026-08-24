@@ -70,7 +70,7 @@ def test_fcm_web_message_is_data_only_so_chrome_does_not_auto_display():
 
 def test_digest_push_click_opens_kakaotalk_with_https_fallback():
     assert DIGEST_PUSH_URL == "kakaotalk://"
-    assert webpush_click_link(DIGEST_PUSH_URL, "https://oday.example") == "https://oday.example/open-kakao"
+    assert webpush_click_link(DIGEST_PUSH_URL, "https://oday.example") == "https://oday.example/open-kakao.html"
     payload = fcm_web_message(
         "device-token",
         "하루만장 · 8/16",
@@ -81,6 +81,7 @@ def test_digest_push_click_opens_kakaotalk_with_https_fallback():
     data = payload["message"]["data"]
     assert data["url"] == "kakaotalk://"
     assert payload["message"]["webpush"]["fcm_options"]["link"].endswith(OPEN_KAKAO_PATH)
+    assert OPEN_KAKAO_PATH == "/open-kakao.html"
 
 
 def test_notify_digest_sent_targets_kakaotalk(db_session, monkeypatch):
@@ -102,23 +103,21 @@ def test_notify_digest_sent_targets_kakaotalk(db_session, monkeypatch):
     assert seen["tag"] == "todays3-digest"
 
 
-def test_missed_digest_push_stays_in_the_app(db_session, monkeypatch):
+def test_missed_digest_push_is_not_sent(db_session, monkeypatch):
     user = _user(db_session)
     register_push_device(db_session, user.id, token="phone", platform="web", device_id="phone")
     db_session.commit()
-    seen: dict[str, str] = {}
+    sent: list[str] = []
 
     def fake_send(token: str, title: str, body: str, *, url: str = "/app", tag: str = "todays3-digest") -> str:
-        _ = (token, title, body)
-        seen["url"] = url
-        seen["tag"] = tag
+        sent.append(tag)
+        _ = (token, title, body, url)
         return "ok"
 
     monkeypatch.setattr("app.services.fcm.fcm_send_configured", lambda: True)
     monkeypatch.setattr("app.services.fcm.fcm_send_one", fake_send)
-    notify_digest_missed(db_session, user.id, "07:30")
-    assert seen["url"] == "/app"
-    assert seen["tag"] == "todays3-digest-missed"
+    assert notify_digest_missed(db_session, user.id, "07:30") == 0
+    assert sent == []
 
 
 def test_fcm_web_message_can_open_notes_for_update_news():
@@ -158,7 +157,14 @@ def test_fcm_sw_skips_show_when_fcm_already_displayed_notification(monkeypatch):
     assert "todays3-digest" in src
     assert "data.tag" in src
     assert "kakaotalk:" in src
-    assert "/open-kakao" in src
+    assert "/open-kakao.html" in src
+    assert "kakaotalk:') === 0 || url.indexOf('intent:') === 0) return url" not in src
+    assert "includeUncontrolled" in src
+    assert "todays3-open-kakao" in src
+    assert "postMessage" in src
+    assert "client.navigate" in src
+    assert "clients.openWindow" in src
+    assert "notificationUrl" in src
     assert "/app/notes" in src or "clickTarget" in src
     assert "APP_ORIGIN" in src
 

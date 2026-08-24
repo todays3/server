@@ -15,6 +15,15 @@ def test_split_memo_chunks_single_when_short():
     assert "짧은 본문" in chunks[0]
 
 
+def test_split_memo_chunks_separates_assistants_before_length():
+    body = "민준요. 좋은 저녁이에요, 민수님.\n오늘 10개 중에 고른 3개입니다.\n\n\x1e\n\n하람요. 좋은 저녁이에요, 민수님.\n오늘 10개 중에 고른 3개입니다."
+    chunks = split_memo_chunks("하루만장", body)
+    assert len(chunks) == 2
+    assert "민준" in chunks[0] and "하람" not in chunks[0]
+    assert "하람" in chunks[1] and "민준" not in chunks[1]
+    assert "\x1e" not in chunks[0] and "\x1e" not in chunks[1]
+
+
 def test_split_memo_chunks_respects_limit():
     body = "\n".join([f"{i}) 항목 내용 " + ("가" * 80) for i in range(1, 20)])
     chunks = split_memo_chunks("하루만장", body)
@@ -85,16 +94,29 @@ def test_format_body_uses_assistant_name_when_roles_set():
 def test_format_body_puts_a_rule_between_articles():
     pref = Preference(insight_questions=False, notes="짧게")
     items = [
-        {"kind": "아티클", "title": "금리", "blurb": "요약입니다.", "url": "https://a.example", "why": "한경 헤드라인"},
-        {"kind": "유튜브", "title": "시황", "blurb": "장 흐름입니다.", "url": "https://b.example", "why": "조회수 1만+ 영상"},
+        {"kind": "아티클", "title": "금리", "blurb": "요약입니다.", "url": "https://a.example", "why": "피드 1위·3시간 전"},
+        {"kind": "유튜브", "title": "시황", "blurb": "장 흐름입니다.", "url": "https://b.example", "why": "조회 2.4만·5시간 전"},
         {"kind": "커뮤니티", "title": "토론", "blurb": "수급입니다.", "url": "https://c.example"},
     ]
     body = _format_body("민수", items, pref, ["경제"])
     assert body.count("────────") == 2
     assert "첫째." in body and "둘째." in body and "셋째." in body
-    assert "선정이유: 한경 헤드라인" in body
+    assert "선정이유: 피드 1위·3시간 전" in body
     assert "요청: 짧게" in body
     assert "— 하루만장" not in body
+
+
+def test_format_body_prefixes_flow_issue_person_angles():
+    pref = Preference(insight_questions=False, notes="")
+    items = [
+        {"kind": "아티클", "title": "시황", "blurb": "동향입니다.", "url": "https://a.example", "angle": "흐름"},
+        {"kind": "아티클", "title": "출시", "blurb": "업데이트입니다.", "url": "https://b.example", "angle": "이슈"},
+        {"kind": "아티클", "title": "인터뷰", "blurb": "발언입니다.", "url": "https://c.example", "angle": "인물"},
+    ]
+    body = _format_body("민수", items, pref, ["IT"])
+    assert "첫째. 📰 흐름 · 시황" in body
+    assert "둘째. 📰 이슈 · 출시" in body
+    assert "셋째. 📰 인물 · 인터뷰" in body
 
 
 def test_format_body_keeps_a_brief_of_three_per_assistant():
@@ -116,8 +138,12 @@ def test_format_body_keeps_a_brief_of_three_per_assistant():
         now=datetime(2026, 8, 16, 18, 0, tzinfo=ZoneInfo("Asia/Seoul")),
     )
     assert body.count("고른 3개입니다.") == 2
-    assert "민준" in body
-    assert "하람" in body
+    assert "\x1e" in body
+    first, second = [part.strip() for part in body.split("\x1e") if part.strip()]
+    assert "민준" in first and "하람" not in first
+    assert "하람" in second and "민준" not in second
+    assert first.splitlines()[0].endswith("민수님.") or first.splitlines()[0].endswith("민수님?")
+    assert second.splitlines()[0].endswith("민수님.") or second.splitlines()[0].endswith("민수님?")
     assert body.count("첫째.") == 2
     assert "여섯째" not in body
 
@@ -152,9 +178,12 @@ def test_test_digest_groups_dummy_items_per_assistant():
     )
     preview = build_test_digest_preview(user, pref)
     assert TEST_DATA_NOTICE in preview.body
+    parts = [part.strip() for part in preview.body.split("\x1e") if part.strip()]
+    assert len(parts) == 2
     assert preview.body.count("첫째.") == 2
-    assert "지훈" in preview.body
-    assert "하람" in preview.body
+    assert "지훈" in parts[0]
+    assert "하람" in parts[1]
     assert preview.body.count("고른 3개입니다.") == 2
+    assert all(TEST_DATA_NOTICE in part for part in parts)
 
 

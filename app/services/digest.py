@@ -17,10 +17,13 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import Digest, Preference, User
 from app.services import llm as llm_service
+from app.services.llm_policy import classify_llm_skip_reason, parse_json_object
+from app.services.angles import ANGLE_ORDER, classify_angle, normalize_angle, order_items_by_angle, pick_three_by_angle
 from app.services.crawl_log import persist_crawl_run
 from app.services.pipeline_timing import elapsed_ms
 from app.services.run_resources import peak_sampler
 from app.services.greeting import digest_opening_line
+from app.services.kakao import ASSISTANT_MEMO_BREAK
 from app.services.pick_reason import KIND_WHY, clip_why, compose_pick_reason
 from app.services.shortlist import shortlist_for_llm, topic_tokens
 from app.services.sources import SourceItem, candidates_as_prompt_block, gather_candidates
@@ -34,6 +37,21 @@ def _emit(on_progress: ProgressCb | None, step: str) -> None:
     if on_progress:
         on_progress(step)
 
+
+def _apply_agent_enrichment(
+    user: User,
+    pref: Preference,
+    items: list[dict[str, str]],
+    body: str,
+) -> tuple[list[dict[str, str]], str]:
+    """Pipe-and-filter: never raise into crawl/send. Disabled in tests via env."""
+    try:
+        from app.services.agent_enrichment import enrich_digest_payload
+
+        return enrich_digest_payload(user, pref, items, body)
+    except Exception:
+        return items, body
+
 # Desk live-preview SAMPLE_POOL, in Kakao body tone (합니다/습니다).
 _CURATED: list[dict[str, str]] = [
     {
@@ -42,7 +60,7 @@ _CURATED: list[dict[str, str]] = [
         "blurb": "연준 발언 이후 나스닥이 반등했지만, 금리 인하 기대는 다시 뒤로 밀렸다는 분석입니다.",
         "url": "https://www.hankyung.com/",
         "hint": "경제",
-        "why": "한경 헤드라인",
+        "why": "피드 1위·3시간 전",
         "insight_q": "금리가 주가에 미치는 영향이 궁금합니다.",
         "insight_url": "https://www.investing.com/economic-calendar/",
     },
@@ -52,7 +70,7 @@ _CURATED: list[dict[str, str]] = [
         "blurb": "코스피 대형주 밸류에이션을 두고 이미 반영됐다는 쪽과 아직 싸다는 쪽이 갈립니다.",
         "url": "https://finance.naver.com/",
         "hint": "경제",
-        "why": "네이버증권 주요뉴스",
+        "why": "DAU 250만·피드 2위",
         "insight_q": "공시·수급만으로 과열을 어떻게 가릴까요?",
         "insight_url": "https://dart.fss.or.kr/",
     },
@@ -62,7 +80,7 @@ _CURATED: list[dict[str, str]] = [
         "blurb": "초반 답장 속도와 만남 텀을 과해석하지 않는 법을 사례로 짚습니다.",
         "url": "https://www.youtube.com/results?search_query=%EC%97%B0%EC%95%A0+%EC%97%B0%EB%9D%BD",
         "hint": "연애",
-        "why": "조회수 1만+ 영상",
+        "why": "조회 2.4만·5시간 전",
         "insight_q": "연락 텀을 과해석하지 않으려면 무엇을 볼까요?",
         "insight_url": "https://brunch.co.kr/",
     },
@@ -72,7 +90,7 @@ _CURATED: list[dict[str, str]] = [
         "blurb": "도구를 늘리기보다 아침 한 번의 프롬프트로 일정·메모를 정리하는 습관입니다.",
         "url": "https://news.ycombinator.com/",
         "hint": "IT",
-        "why": "HN 프론트페이지",
+        "why": "점수 214·피드 1위",
         "insight_q": "생성형 AI가 업무 비용에 미치는 영향은 무엇일까요?",
         "insight_url": "https://news.ycombinator.com/",
     },
@@ -82,7 +100,7 @@ _CURATED: list[dict[str, str]] = [
         "blurb": "왜 옮기나요, 갈등 경험, 최근 실패처럼 반복되는 질문의 답변 뼈대를 모았습니다.",
         "url": "https://www.wanted.co.kr/",
         "hint": "커리어",
-        "why": "원티드 커리어글",
+        "why": "피드 3위·오늘",
         "insight_q": "면접관이 이 질문에서 실제로 보려는 포인트는 무엇일까요?",
         "insight_url": "https://www.wanted.co.kr/",
     },
@@ -92,7 +110,7 @@ _CURATED: list[dict[str, str]] = [
         "blurb": "완벽한 루틴 대신 취침 고정과 20분 걷기만 지키는 주간 실험입니다.",
         "url": "https://www.youtube.com/results?search_query=%EC%88%98%EB%A9%B4+%EC%9A%B4%EB%8F%99",
         "hint": "라이프",
-        "why": "조회수 1만+ 영상",
+        "why": "조회 2.4만·5시간 전",
         "insight_q": "수면 부채가 집중력에 미치는 영향은 무엇일까요?",
         "insight_url": "https://www.youtube.com/results?search_query=%EC%88%98%EB%A9%B4+%EB%B6%80%EC%B1%84",
     },
@@ -102,7 +120,7 @@ _CURATED: list[dict[str, str]] = [
         "blurb": "달러·원 환율이 다시 들썩인 배경과 수입 물가 파급만 추렸습니다.",
         "url": "https://www.bok.or.kr/",
         "hint": "경제",
-        "why": "Investing 시황",
+        "why": "피드 1위·2시간 전",
         "insight_q": "환율 변동이 수입 물가에 미치는 영향은 무엇일까요?",
         "insight_url": "https://www.investing.com/currencies/usd-krw",
     },
@@ -112,7 +130,7 @@ _CURATED: list[dict[str, str]] = [
         "blurb": "원문·타임라인·수치 링크만으로 이슈를 재구성한 스레드입니다.",
         "url": "https://news.naver.com/",
         "hint": "뉴스",
-        "why": "네이버뉴스 헤드라인",
+        "why": "DAU 1800만·피드 1위",
         "insight_q": "이 이슈에서 확인된 사실과 추정은 어떻게 나눌까요?",
         "insight_url": "https://news.naver.com/",
     },
@@ -122,7 +140,7 @@ _CURATED: list[dict[str, str]] = [
         "blurb": "컴파일러·액션·폼 패턴이 기존 코드에 어떻게 붙는지 오늘 건드릴 파일 위주로 설명합니다.",
         "url": "https://github.com/trending",
         "hint": "IT",
-        "why": "GitHub 오늘 트렌딩",
+        "why": "피드 1위·오늘",
         "insight_q": "React 19 도입이 기존 번들·폼 코드에 미치는 영향은 무엇일까요?",
         "insight_url": "https://github.com/trending",
     },
@@ -132,7 +150,7 @@ _CURATED: list[dict[str, str]] = [
         "blurb": "시장 밴드·현재 총보상·이직 비용을 표로 맞춰 두고 말하는 법입니다.",
         "url": "https://www.levels.fyi/",
         "hint": "커리어",
-        "why": "원티드 커리어글",
+        "why": "피드 3위·오늘",
         "insight_q": "연봉 협상에서 먼저 맞춰 둘 숫자는 무엇일까요?",
         "insight_url": "https://www.wanted.co.kr/",
     },
@@ -218,16 +236,15 @@ def profile_brief(user: User, pref: Preference | None = None, *, today: date | N
         role_line = ", ".join(role_tokens(roles))
         occ = role_line or occ
     elif not occ:
-        occ = "(없음)"
-    band = age_band(getattr(user, "birth_date", None), today=today) or "(없음)"
+        occ = "(none)"
+    band = age_band(getattr(user, "birth_date", None), today=today) or "(none)"
     base = (
-        f"닉네임: {(user.display_name or '').strip() or '(없음)'}\n"
-        f"직무: {occ}\n"
-        f"연령대: {band}\n"
-        "직무·연령대에 실질적으로 도움이 되는 후보를 우선합니다. "
-        "title·blurb·insight_q에는 선택한 어시스턴트의 대표 인간상·말투를 반영하되, 합니다/습니다 체는 유지합니다. "
-        "생년월일·나이를 본문에 숫자로 쓰지 마세요. "
-        "독자는 한국 사용자이므로 한국어 아티클·한국 영상을 우선하세요."
+        f"Nickname: {(user.display_name or '').strip() or '(none)'}\n"
+        f"Job: {occ}\n"
+        f"Age band: {band}\n"
+        "Prefer items that actually help this job/age. "
+        "Kakao-visible title/blurb/insight_q must be Korean 합니다/습니다 and follow the hired persona. "
+        "Never write birth year or exact age. Prefer Korean articles and Korean videos."
     )
     role_block = roles_profile_brief(roles, settings)
     if not role_block:
@@ -307,6 +324,7 @@ def personalize_candidates(
     band = age_band(getattr(user, "birth_date", None))
     if band:
         tokens = [*tokens, band]
+    topic_parts = topic_tokens(_topic_list(pref)) if pref is not None else []
     if not candidates:
         return candidates
 
@@ -316,6 +334,12 @@ def personalize_candidates(
         blob = f"{item.title} {item.summary} {item.source}".lower()
         return sum(1 for token in tokens if token.lower() in blob)
 
+    def topic_hits_of(item: SourceItem) -> int:
+        if not topic_parts:
+            return 0
+        blob = f"{item.title} {item.summary} {item.source}".lower()
+        return sum(1 for token in topic_parts if token.lower() in blob)
+
     def score(item: SourceItem) -> tuple[int, int]:
         return (occupation_hits(item), korean_content_score(item))
 
@@ -323,14 +347,25 @@ def personalize_candidates(
     return [
         replace(
             item,
-            pick_reason=compose_pick_reason(item, job_match=occupation_hits(item) > 0),
+            job_hits=occupation_hits(item),
+            topic_hits=topic_hits_of(item),
+            pick_reason=compose_pick_reason(
+                item,
+                job_hits=occupation_hits(item),
+                topic_hits=topic_hits_of(item),
+            ),
         )
         for item in ranked
     ]
 
 
 def llm_shortlist(
-    candidates: list[SourceItem], user: User, topics: list[str], pref: Preference | None = None
+    candidates: list[SourceItem],
+    user: User,
+    topics: list[str],
+    pref: Preference | None = None,
+    *,
+    role: str | None = None,
 ) -> list[SourceItem]:
     job = _job_tokens(user, pref)
     band = age_band(getattr(user, "birth_date", None))
@@ -342,11 +377,61 @@ def llm_shortlist(
         job_tokens=job,
         topic_parts=topic_tokens(topics),
         korean_scores=korean_scores,
+        role=role,
     )
 
 
 def _wants_insights(pref: Preference) -> bool:
     return bool(getattr(pref, "insight_questions", False))
+
+
+def _is_match_stock(item: dict[str, str]) -> bool:
+    from app.services.stock_match import MATCH_STOCK_KIND
+
+    return (item.get("kind") or "") == MATCH_STOCK_KIND or (item.get("hint") or "") == "match_stock"
+
+
+def _wants_match_stock(pref: Preference, *, role: str | None = None) -> bool:
+    from app.services.roles import parse_roles
+
+    if role is not None:
+        return role == "stock_analyst"
+    roles = parse_roles(getattr(pref, "roles", "") or "")
+    return "stock_analyst" in roles
+
+
+def _attach_match_stock(
+    items: list[dict[str, str]],
+    pref: Preference,
+    raw_match: object = None,
+    *,
+    role: str | None = None,
+) -> list[dict[str, str]]:
+    from app.services.roles import parse_role_settings
+    from app.services.stock_match import heuristic_match_stock, parse_match_stock
+
+    articles = [item for item in items if not _is_match_stock(item)]
+    if not _wants_match_stock(pref, role=role):
+        return articles
+    settings = parse_role_settings(getattr(pref, "role_settings", "") or "{}")
+    market = str(settings.get("investor_market") or "국내증시")
+    picked = parse_match_stock(raw_match) or heuristic_match_stock(articles, market=market)
+    if not picked:
+        return articles
+    first = articles[0] if articles else {}
+    if first.get("assistant"):
+        picked["assistant"] = first["assistant"]
+    if first.get("role"):
+        picked["role"] = first["role"]
+    return articles + [picked]
+
+
+def _role_send_items(items: list[dict[str, str]], *, role: str | None = None) -> list[dict[str, str]]:
+    articles = [item for item in items if not _is_match_stock(item)][:3]
+    stocks = [item for item in items if _is_match_stock(item)][:1]
+    if role == "stock_analyst":
+        return stocks
+    return articles
 
 
 def _kind_emoji(kind: str) -> str:
@@ -385,6 +470,7 @@ class _PrefFocus:
 
 def site_ids_for_role(role: str) -> set[str]:
     from app.catalog.ref_sites import MEGA_TO_GROUPS, catalog_groups
+    from app.services.domain_gate import topic_site_id
     from app.services.roles import ROLE_TOPIC_MEGAS
 
     wanted = set()
@@ -394,15 +480,52 @@ def site_ids_for_role(role: str) -> set[str]:
     for group in catalog_groups():
         if group["id"] in wanted:
             ids.update(site["id"] for site in group["sites"])
+    for mega in ROLE_TOPIC_MEGAS.get(role, []):
+        stamp = topic_site_id(mega)
+        if stamp:
+            ids.add(stamp)
     return ids
 
 
-def filter_candidates_for_role(candidates: list[SourceItem], role: str) -> list[SourceItem]:
-    site_ids = site_ids_for_role(role)
-    if not site_ids:
-        return list(candidates)
-    matched = [item for item in candidates if item.site_id and item.site_id in site_ids]
-    return matched if matched else list(candidates)
+def sources_for_role(role: str, user_sources: list[str] | None = None) -> set[str]:
+    """Catalog sites for the role's mega topics, optionally limited to user picks."""
+    from app.services.domain_gate import topic_site_ids_for_roles
+
+    allowed = site_ids_for_role(role)
+    topic_ids = topic_site_ids_for_roles([role])
+    if not user_sources:
+        return allowed
+    catalog_picked = {site for site in user_sources if site in allowed and site not in topic_ids}
+    if catalog_picked:
+        return catalog_picked | topic_ids
+    return allowed
+
+
+def filter_candidates_for_role(
+    candidates: list[SourceItem],
+    role: str,
+    *,
+    user_sources: list[str] | None = None,
+    role_topics: list[str] | None = None,
+) -> list[SourceItem]:
+    from app.services.domain_gate import item_passes_role_domain, topic_site_ids_for_roles
+
+    _ = role_topics  # topics shape the crawl; domain gate enforces desk fit here
+    allowed_sites = sources_for_role(role, user_sources)
+    topic_ids = topic_site_ids_for_roles([role])
+    trusted = site_ids_for_role(role) - topic_ids
+    matched: list[SourceItem] = []
+    for item in candidates:
+        sid = (item.site_id or "").strip()
+        if sid:
+            if sid not in allowed_sites:
+                continue
+        elif not item_passes_role_domain(item, role, trusted_sites=set()):
+            continue
+        if not item_passes_role_domain(item, role, trusted_sites=trusted):
+            continue
+        matched.append(item)
+    return matched
 
 
 def _lead_sentence(text: str, *, max_len: int = 80) -> str:
@@ -421,6 +544,34 @@ def _lead_sentence(text: str, *, max_len: int = 80) -> str:
     return raw[: max_len - 1].rstrip() + "…"
 
 
+def _format_match_stock_lines(item: dict[str, str]) -> list[str]:
+    lines = [_ITEM_RULE, "", "오늘의 종목 · 매수 추천이 아닙니다"]
+    title = (item.get("title") or "").strip()
+    if title:
+        lines.append(title)
+    blurb = _lead_sentence(item.get("blurb") or "")
+    if blurb:
+        lines.append(blurb)
+    url = (item.get("url") or "").strip()
+    if url:
+        lines.append(f"재무제표: {url}")
+    lines.append("")
+    return lines
+
+
+def _split_articles_and_stock(section: list[dict[str, str]]) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    articles = [item for item in section if not _is_match_stock(item)]
+    stocks = [item for item in section if _is_match_stock(item)]
+    return articles, stocks
+
+
+def _section_intro(articles: list[dict[str, str]], stocks: list[dict[str, str]], reviewed_count: int, *, empty_picked_min: int) -> str:
+    if stocks and not articles:
+        return "오늘 시장에서 종목 1개를 골랐습니다. 매수 추천이 아닙니다."
+    picked = len(articles) if articles else empty_picked_min
+    return f"오늘 {reviewed_count}개 중에 고른 {picked}개입니다."
+
+
 def _format_item_lines(item: dict[str, str], index: int, *, show_insight: bool) -> list[str]:
     lines: list[str] = []
     if index:
@@ -430,7 +581,9 @@ def _format_item_lines(item: dict[str, str], index: int, *, show_insight: bool) 
     kind = item.get("kind") or "아티클"
     emoji = _kind_emoji(kind)
     title = (item.get("title") or "").strip()
-    lines.append(f"{ordinal}. {emoji} {title}")
+    angle = (item.get("angle") or "").strip()
+    headline = f"{angle} · {title}" if angle and title else title
+    lines.append(f"{ordinal}. {emoji} {headline}")
     blurb = _lead_sentence(item.get("blurb") or item.get("summary") or "")
     if blurb:
         lines.append(blurb)
@@ -459,6 +612,35 @@ def _assistant_groups(items: list[dict[str, str]]) -> list[tuple[str, list[dict[
     return groups
 
 
+def _format_assistant_section(
+    name: str,
+    assistant: str,
+    section: list[dict[str, str]],
+    pref: Preference,
+    reviewed_count: int,
+    when: datetime,
+    *,
+    include_custom: bool,
+    empty_picked_min: int,
+) -> str:
+    show_insight = _wants_insights(pref)
+    articles, stocks = _split_articles_and_stock(section)
+    lines = [
+        digest_opening_line(name, assistant, now=when),
+        _section_intro(articles, stocks, reviewed_count, empty_picked_min=empty_picked_min),
+        "",
+    ]
+    for i, item in enumerate(articles):
+        lines.extend(_format_item_lines(item, i, show_insight=show_insight))
+    for stock in stocks:
+        lines.extend(_format_match_stock_lines(stock))
+    if include_custom:
+        custom = _customization(pref)
+        if custom:
+            lines.append(f"요청: {custom}")
+    return "\n".join(lines).strip()
+
+
 def _format_body(
     name: str,
     items: list[dict[str, str]],
@@ -471,47 +653,48 @@ def _format_body(
     n = reviewed_count if reviewed_count is not None else len(items)
     _ = topics
     when = now or datetime.now(ZoneInfo(SEOUL))
-    from app.services.greeting import assistant_intro_line, greeting_line
     from app.services.roles import parse_role_settings, parse_roles, pick_digest_assistant
 
     roles = parse_roles(getattr(pref, "roles", "") or "")
     settings = parse_role_settings(getattr(pref, "role_settings", "") or "{}")
     local = when.astimezone(ZoneInfo(SEOUL)) if when.tzinfo else when.replace(tzinfo=ZoneInfo(SEOUL))
-    show_insight = _wants_insights(pref)
     groups = _assistant_groups(items)
     named = [group for group in groups if group[0]]
-    custom = _customization(pref)
 
     if len(named) > 1:
-        lines: list[str] = [greeting_line(name, now=when), ""]
+        parts: list[str] = []
+        last = len(groups) - 1
         for gi, (assistant, section) in enumerate(groups):
-            if gi:
-                lines.append(_ITEM_RULE)
-                lines.append("")
-            if assistant:
-                lines.append(assistant_intro_line(assistant, now=when))
-            lines.append(f"오늘 {n}개 중에 고른 {len(section)}개입니다.")
-            lines.append("")
-            for i, item in enumerate(section):
-                lines.extend(_format_item_lines(item, i, show_insight=show_insight))
-        if custom:
-            lines.append(f"요청: {custom}")
-        return "\n".join(lines).strip()
+            aide = assistant or pick_digest_assistant(
+                roles, settings, day=local.timetuple().tm_yday, hour=local.hour
+            )
+            parts.append(
+                _format_assistant_section(
+                    name,
+                    aide,
+                    section,
+                    pref,
+                    n,
+                    when,
+                    include_custom=gi == last,
+                    empty_picked_min=0,
+                )
+            )
+        return ASSISTANT_MEMO_BREAK.join(parts)
 
-    picked = max(len(items), 1)
     assistant = named[0][0] if named else pick_digest_assistant(
         roles, settings, day=local.timetuple().tm_yday, hour=local.hour
     )
-    lines = [
-        digest_opening_line(name, assistant, now=when),
-        f"오늘 {n}개 중에 고른 {picked}개입니다.",
-        "",
-    ]
-    for i, item in enumerate(items):
-        lines.extend(_format_item_lines(item, i, show_insight=show_insight))
-    if custom:
-        lines.append(f"요청: {custom}")
-    return "\n".join(lines).strip()
+    return _format_assistant_section(
+        name,
+        assistant,
+        items,
+        pref,
+        n,
+        when,
+        include_custom=True,
+        empty_picked_min=1,
+    )
 
 
 def _insight_question(title: str, blurb: str) -> str:
@@ -564,14 +747,14 @@ def _attach_insights(
 
 
 def _why_for_item(item: dict[str, str], candidates: list[SourceItem]) -> str:
-    existing = clip_why(item.get("why") or "")
-    if existing:
-        return existing
     url = item.get("url") or ""
     match = next((c for c in candidates if c.url == url), None)
     if match:
-        return clip_why(match.pick_reason or compose_pick_reason(match))
-    return clip_why(KIND_WHY.get(item.get("kind") or "", "오늘 후보 중 선별"))
+        return clip_why(compose_pick_reason(match))
+    existing = clip_why(item.get("why") or "")
+    if existing and any(ch.isdigit() for ch in existing):
+        return existing
+    return clip_why(KIND_WHY.get(item.get("kind") or "", "48시간 이내"))
 
 
 def _attach_why(items: list[dict[str, str]], candidates: list[SourceItem]) -> list[dict[str, str]]:
@@ -579,27 +762,10 @@ def _attach_why(items: list[dict[str, str]], candidates: list[SourceItem]) -> li
 
 
 def _heuristic_pick(candidates: list[SourceItem], seed: str) -> list[dict[str, str]]:
-    """Pick up to 3 items from an already-ranked list, preferring kind diversity."""
+    """Pick up to 3 items: 흐름 · 이슈 · 인물, then unused kinds if a bucket is empty."""
     if not candidates:
         return []
     _ = seed
-
-    picked: list[SourceItem] = []
-    used_kinds: set[str] = set()
-    for item in candidates:
-        if item.kind in used_kinds:
-            continue
-        picked.append(item)
-        used_kinds.add(item.kind)
-        if len(picked) >= 3:
-            break
-    if len(picked) < 3:
-        for item in candidates:
-            if item not in picked:
-                picked.append(item)
-            if len(picked) >= 3:
-                break
-
     return [
         {
             "kind": p.kind,
@@ -607,9 +773,10 @@ def _heuristic_pick(candidates: list[SourceItem], seed: str) -> list[dict[str, s
             "blurb": _summary_blurb(p),
             "url": p.url,
             "hint": p.source,
-            "why": clip_why(p.pick_reason or compose_pick_reason(p)),
+            "angle": ang,
+            "why": clip_why(compose_pick_reason(p)),
         }
-        for p in picked[:3]
+        for ang, p in pick_three_by_angle(candidates)
     ]
 
 
@@ -633,12 +800,15 @@ def _static_fallback(topics: list[str], seed: str, *, offset: int = 0, count: in
             "insight_q": x.get("insight_q", ""),
             "insight_url": x.get("insight_url", ""),
             "why": x.get("why") or "고정 큐레이션",
+            "angle": ANGLE_ORDER[i % len(ANGLE_ORDER)],
         }
-        for x in ordered[:count]
+        for i, x in enumerate(ordered[:count])
     ]
 
 
 def _with_test_notice(body: str) -> str:
+    if "\x1e" in (body or ""):
+        return "\x1e".join(_with_test_notice(part) for part in body.split("\x1e"))
     if TEST_DATA_NOTICE in body:
         return body
     lines = body.split("\n")
@@ -650,6 +820,56 @@ def _with_test_notice(body: str) -> str:
     return "\n".join([lines[0], "", TEST_DATA_NOTICE, ""] + rest).strip()
 
 
+def _role_curate_rules(role: str | None) -> str:
+    """Extra LLM instructions for a hired desk role. Empty for generic briefs."""
+    if role == "developer":
+        return (
+            "Developer desk rules (override generic angle hints when they conflict):\n"
+            "Priority #1 is the latest tech trend / shipping technology — not evergreen tutorials.\n"
+            "Prefer verified sources: official eng blogs, HN, GeekNews, InfoQ, Naver D2, GitHub trending, "
+            "reputable company tech blogs. Deprioritize rumor-only community posts unless they cite a primary source.\n"
+            "Angles for this desk:\n"
+            "1) 흐름 = the week's field-wide tech trend (new stack, paradigm, adoption wave).\n"
+            "2) 이슈 = one concrete release / CVE / migration / breaking change tied to that trend.\n"
+            "3) 인물 = an engineer/exec commenting on that same trend, OR a hiring/move of someone tied to that tech. "
+            "Reject celebrity bios and founder lore unrelated to current tech.\n"
+            "Reject stock-tape, dating, entertainment, and off-domain lifestyle pieces.\n"
+        )
+    if role in {"investor", "stock_analyst"}:
+        return (
+            "Retail / market desk rules (hard domain lock):\n"
+            "ONLY today's equity / macro market content: 시황, 수급, 지수, 환율·금리, 실적·공시, theme-stock moves.\n"
+            "Reject chip-process papers, software tutorials, dating, K-pop, webtoon, and non-market lifestyle.\n"
+            "If a theme is 반도체, cover it as a market theme (수급·실적·관련주), never as fab/process engineering.\n"
+            "Angles: 흐름 = market-wide tape; 이슈 = one concrete market event; 인물 = investor/analyst voice on that tape.\n"
+        )
+    if role == "semiconductor":
+        return (
+            "Semiconductor device/design/verification desk rules (hard domain lock):\n"
+            "ONLY process / device / circuit / EDA / yield / packaging technology trends "
+            "(EUV, GAA, CFET, HBM process, foundry nodes, ISSCC/IEDM-class topics).\n"
+            "Reject stock targets, buy/sell calls, Kospi tape, dating, K-pop, general startup fluff, "
+            "and software-only stories with no silicon angle.\n"
+            "Angles: 흐름 = field-wide process/device trend; 이슈 = one concrete tech event; "
+            "인물 = engineer/researcher tied to that tech.\n"
+        )
+    if role == "doctor":
+        return (
+            "Clinical desk rules: ONLY medicine / guideline / clinical evidence. "
+            "Reject markets, dating, and entertainment.\n"
+        )
+    if role == "job_seeker":
+        return (
+            "Hiring desk rules: ONLY jobs / hiring / career prep. Reject markets and entertainment fluff.\n"
+        )
+    if role in {"music", "reader", "movie", "otaku", "gaming", "performing_arts"}:
+        return (
+            f"Culture desk ({role}) rules: stay inside this desk's medium only. "
+            "Reject stock markets, chip process papers, and unrelated lifestyle.\n"
+        )
+    return ""
+
+
 def _llm_curate(
     db: Session,
     user: User,
@@ -659,6 +879,8 @@ def _llm_curate(
     on_progress: ProgressCb | None = None,
     *,
     pool: list[SourceItem] | None = None,
+    feedback: str = "",
+    role: str | None = None,
 ) -> tuple[tuple[str, str, list[dict[str, str]]] | None, str, str]:
     settings = get_settings()
     if not settings.llm_configured:
@@ -668,65 +890,97 @@ def _llm_curate(
     reviewed = pool if pool is not None else candidates
 
     topics = ", ".join(_topic_list(pref)) or "일반"
-    custom = _customization(pref) or "(없음)"
+    custom = _customization(pref) or "(none)"
     insight_on = _wants_insights(pref)
     insight_rules = ""
     insight_json = ""
     if insight_on:
         insight_rules = (
-            "각 item마다 insight_q·insight_url을 **하나씩만** 추가합니다.\n"
-            "insight_q는 본문에서 자연스럽게 생길 수 있는 궁금증 한 문장입니다 "
-            "(예: 금리 얘기면 '금리가 주가에 미치는 영향이 궁금합니다').\n"
-            "insight_url은 그 궁금증을 해소하는 보조 링크입니다. 가능하면 후보 URL 중 "
-            "본문 url과 다른 것을 쓰고, 없으면 검색 URL도 허용합니다.\n"
+            "Each item: one insight_q and one insight_url. "
+            "insight_q is one Korean curiosity sentence that follows from the piece "
+            "(e.g. rates → '금리가 주가에 미치는 영향이 궁금합니다'). "
+            "insight_url is a helper link, preferably another candidate URL, else a search URL.\n"
         )
         insight_json = ',"insight_q":"...","insight_url":"https://..."'
+    retry_block = ""
+    if feedback.strip():
+        retry_block = (
+            "Prior picks failed the diversity check. Pick 3 again from the same candidates.\n"
+            f"{feedback.strip()}\n"
+            "No 3 from one site. One 흐름, one 이슈, one 인물.\n"
+        )
+    role_rules = _role_curate_rules(role)
     prompt = (
-        "너는 '하루만장' 큐레이터입니다. 아래 후보 목록에서만 골라 카카오톡용 브리프를 한국어로 만듭니다.\n"
-        "독자는 한국 사용자입니다. 한국어 제목·요약인 아티클과 한국 채널 영상을 우선하세요. "
-        "영어 전용 후보는 한국어 후보가 부족할 때만 고릅니다.\n"
-        "반드시 후보에 있는 URL만 본문 url로 사용합니다. URL을 지어내지 마세요.\n"
-        "유튜브·아티클·커뮤니티를 가능하면 섞어 **딱 3개**입니다.\n"
-        "각 item의 title은 짧은 제목, blurb는 제목 바로 아래 넣을 **핵심 한 문장**입니다.\n"
-        "blurb는 두괄식입니다. 요지를 첫 문장에 쓰고, 두 문장 이상으로 늘리지 마세요. "
-        "메타 코멘트(예: '15분짜리')만 쓰지 마세요.\n"
-        "후보 summary가 있으면 그걸 다듬어 blurb로 쓰고, 없으면 title을 바탕으로 요약을 만듭니다.\n"
-        "독자에게 보이는 한국어(title·blurb·insight_q)는 기본으로 합니다/습니다 체를 씁니다. "
-        "-다 체(한다/이다/됐다)와 반말은 쓰지 마세요. 커스터마이징에 다른 말투가 있으면 그걸 우선합니다. "
-        "어시스턴트 성격(아래 대표 인간상)이 title·blurb·insight_q 문장 선택과 어휘에 드러나게 쓰세요.\n"
-        "후보 줄의 why는 사이트별 선정 신호입니다(급상승·공식 블로그·조회수 하한 등). "
-        "이 신호를 보고 고르세요. 조회수·좋아요·저자를 지어내지 마세요.\n"
+        "You curate Harumunjang Kakao briefs. Pick exactly 3 items from the candidate list only.\n"
+        "Audience: Korean users. Prefer Korean titles/summaries and Korean YouTube channels. "
+        "Use English-only items only if Korean candidates are scarce.\n"
+        "Use candidate URLs only. Do not invent URLs.\n"
+        "Mix 유튜브/아티클/커뮤니티 when possible.\n"
+        "Three distinct angles, in this order: "
+        "1) 흐름 = field-wide trend. "
+        "2) 이슈 = one concrete hot issue. "
+        "3) 인물 = notable person/interview. "
+        "item.angle must be 흐름|이슈|인물.\n"
+        "Do not pick 3 from the same site or only one high-DAU outlet.\n"
+        f"{role_rules}"
+        f"{retry_block}"
+        "title = short headline. blurb = one lead sentence under the title (not two+). "
+        "No meta like '15-min video'. Rewrite candidate summary as blurb when present, else summarize the title.\n"
+        "Kakao-visible Korean (title, blurb, insight_q): polite 합니다/습니다. "
+        "No -다 diary form or banmal unless customization asks otherwise. "
+        "Let the assistant persona shape word choice.\n"
+        "Candidate why/metrics are real signals (views, score, comments, age, feed rank). "
+        "Do not invent views, likes, or authors.\n"
         f"{insight_rules}"
-        "JSON만 출력:\n"
-        '{"title":"하루만장 · M/D (요일)","items":[{"kind":"유튜브|아티클|커뮤니티","title":"...","blurb":"...","url":"https://..."'
+        "JSON object only. No markdown. Keep each title ≤ 40 chars and each blurb one short Korean sentence.\n"
+        '{"title":"하루만장 · M/D (요일)","items":[{"kind":"유튜브|아티클|커뮤니티","title":"...","blurb":"...","url":"https://...","angle":"흐름|이슈|인물"'
         f"{insight_json}"
-        "}]}\n"
-        f"수신자: {user.display_name}\n"
+        "}]"
+        "}\n"
+        f"Recipient: {user.display_name}\n"
         f"{profile_brief(user, pref)}\n"
-        f"관심 주제: {topics}\n"
-        f"커스터마이징: {custom}\n"
-        f"후보:\n{candidates_as_prompt_block(candidates)}\n"
+        f"Topics: {topics}\n"
+        f"Customization: {custom}\n"
+        f"Candidates:\n{candidates_as_prompt_block(candidates)}\n"
     )
     llm_started = perf_counter()
-    text, _usage = llm_service.chat_completion(
+    messages = [
+        {"role": "system", "content": "Return only valid JSON for three curated links."},
+        {"role": "user", "content": prompt},
+    ]
+    max_tokens = 700 if insight_on else 500
+    text, usage = llm_service.chat_completion(
         db,
         user_id=user.id,
         purpose="digest_curate",
-        messages=[
-            {"role": "system", "content": "Return only valid JSON for three curated links."},
-            {"role": "user", "content": prompt},
-        ],
+        messages=messages,
         temperature=0.4,
-        max_tokens=1100 if insight_on else 900,
+        max_tokens=max_tokens,
     )
+    data = parse_json_object(text) if text else None
+    # Local Qwen often returns success=True with broken JSON; fall back to Groq once.
+    used_local = usage is not None and (getattr(usage, "provider", "") or "") == "ollama"
+    if data is None and used_local and settings.remote_llm_ready:
+        text2, usage2 = llm_service.chat_completion(
+            db,
+            user_id=user.id,
+            purpose="digest_curate",
+            messages=messages,
+            temperature=0.4,
+            max_tokens=max_tokens,
+            force_remote=True,
+        )
+        if text2:
+            text, usage = text2, usage2
+            data = parse_json_object(text)
     if timings is not None:
-        timings["llm_ms"] = elapsed_ms(llm_started)
+        timings["llm_ms"] = int(timings.get("llm_ms") or 0) + elapsed_ms(llm_started)
     if not text:
-        return None, "empty_response", ""
+        return None, classify_llm_skip_reason(usage), ""
     try:
         agg_started = perf_counter()
-        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.I | re.M)
-        data = json.loads(text)
+        if data is None:
+            return None, "invalid_json", text[:2000]
         items = data.get("items") or []
         if len(items) < 3:
             if timings is not None:
@@ -748,6 +1002,8 @@ def _llm_curate(
                 "url": url,
                 "hint": "",
             }
+            guessed = normalize_angle(str(raw.get("angle") or "")) or classify_angle(row["title"], row["blurb"])
+            row["angle"] = guessed or ANGLE_ORDER[len(cleaned)]
             row["why"] = _why_for_item(row, reviewed)
             if insight_on:
                 row["insight_q"] = str(raw.get("insight_q") or "")[:120]
@@ -759,6 +1015,7 @@ def _llm_curate(
             if timings is not None:
                 timings["aggregation_ms"] = elapsed_ms(agg_started)
             return None, "fewer_than_3_valid_urls", text[:2000]
+        cleaned = order_items_by_angle(cleaned)
         cleaned = _attach_why(_attach_insights(cleaned, pref=pref, candidates=reviewed), reviewed)
         topics_list = _topic_list(pref)
         for i, row in enumerate(cleaned):
@@ -816,8 +1073,14 @@ def _label_picked_items(
     pref: Preference,
     candidates: list[SourceItem],
     topics: list[str],
+    *,
+    role: str | None = None,
 ) -> list[dict[str, str]]:
-    items = _attach_why(_attach_insights(picked, pref=pref, candidates=candidates), candidates)
+    items = _attach_match_stock(
+        _attach_why(_attach_insights(picked, pref=pref, candidates=candidates), candidates),
+        pref,
+        role=role,
+    )
     labeled: list[dict[str, str]] = []
     for i, item in enumerate(items):
         row = dict(item)
@@ -825,6 +1088,48 @@ def _label_picked_items(
         row["topic"] = topic.replace("/", " · ") if topic else ""
         labeled.append(row)
     return labeled
+
+
+def _should_run_critique() -> bool:
+    from app.services.pipeline_flags import critique_enabled
+
+    return critique_enabled()
+
+
+def _critique_picks(
+    db: Session,
+    user: User,
+    pref: Preference,
+    items: list[dict[str, str]],
+    candidates: list[SourceItem],
+    timings: dict[str, int],
+) -> object:
+    from app.services.curate_agent import CRITIQUE_PURPOSE, build_critique_prompt, parse_critique
+
+    if not get_settings().llm_configured or not items:
+        return None
+    started = perf_counter()
+    text, _usage = llm_service.chat_completion(
+        db,
+        user_id=user.id,
+        purpose=CRITIQUE_PURPOSE,
+        messages=[
+            {"role": "system", "content": "Return only valid JSON for a diversity critique."},
+            {
+                "role": "user",
+                "content": build_critique_prompt(
+                    items=items,
+                    candidate_block=candidates_as_prompt_block(candidates),
+                    profile=profile_brief(user, pref),
+                    topics=", ".join(_topic_list(pref)) or "일반",
+                ),
+            },
+        ],
+        temperature=0.2,
+        max_tokens=350,
+    )
+    timings["llm_ms"] = int(timings.get("llm_ms") or 0) + elapsed_ms(started)
+    return parse_critique(text or "")
 
 
 def _curate_three(
@@ -837,23 +1142,174 @@ def _curate_three(
     timings: dict[str, int],
     on_progress: ProgressCb | None,
     pool: list[SourceItem],
+    *,
+    role: str | None = None,
 ) -> tuple[list[dict[str, str]], str, str, str, str]:
+    from app.services.curate_agent import should_retry
+
+    shortlist = llm_shortlist(candidates, user, topics, pref, role=role)
     llm, skip_reason, llm_raw = _llm_curate(
         db,
         user,
         pref,
-        llm_shortlist(candidates, user, topics, pref),
+        shortlist,
         timings=timings,
         on_progress=on_progress,
         pool=pool,
+        role=role,
     )
     if llm:
         title, _body, items = llm
+        if _should_run_critique():
+            critique = _critique_picks(db, user, pref, items, shortlist or candidates, timings)
+            if should_retry(critique, 0):
+                advice = getattr(critique, "advice", "") or getattr(critique, "reason", "")
+                llm2, skip2, raw2 = _llm_curate(
+                    db,
+                    user,
+                    pref,
+                    shortlist,
+                    timings=timings,
+                    on_progress=on_progress,
+                    pool=pool,
+                    feedback=str(advice),
+                    role=role,
+                )
+                if llm2:
+                    title, _body, items = llm2
+                    llm_raw = raw2
+                skip_reason = skip_reason or skip2
         return items, title, "llm", "", llm_raw
     picked = _heuristic_pick(candidates, seed)
     curator = "heuristic" if picked else "static"
-    labeled = _label_picked_items(picked or _static_fallback(topics, seed), pref, pool, topics)
+    labeled = _label_picked_items(picked or _static_fallback(topics, seed), pref, pool, topics, role=role)
     return labeled, "", curator, skip_reason, llm_raw
+
+
+def _candidate_dicts(candidates: list[SourceItem]) -> list[dict[str, str]]:
+    return [
+        {
+            "title": item.title or "",
+            "blurb": item.summary or "",
+            "summary": item.summary or "",
+            "source": item.source or "",
+            "site_id": getattr(item, "site_id", "") or "",
+            "url": item.url or "",
+        }
+        for item in candidates
+    ]
+
+
+def _llm_curate_stock(
+    db: Session,
+    user: User,
+    pref: Preference,
+    candidates: list[SourceItem],
+    timings: dict[str, int],
+    on_progress: ProgressCb | None,
+) -> tuple[object | None, str, str]:
+    settings = get_settings()
+    if not settings.llm_configured:
+        return None, "llm_not_configured", ""
+    topics = ", ".join(_topic_list(pref)) or "경제"
+    custom = _customization(pref) or "(none)"
+    prompt = (
+        "You are the Harumunjang stock analyst (도윤). Pick exactly ONE listed stock for today's tape "
+        "from the candidate evidence. Do not pick 3 articles.\n"
+        "Hard rules:\n"
+        "1) Prefer names backed by clear market signals in the candidates: "
+        "외국인/기관 순매수·순매도, 거래대금·거래량 상위, 시간외·장후 급등, 공시·수주·실적, 특징주.\n"
+        "2) Prefer candidates from finance portals (네이버 증권, 한경, 매경, 토스, Yahoo, DART).\n"
+        "3) Do NOT default to 삼성전자 unless it is the day's clearest signal in the candidates.\n"
+        "4) Not a buy/invest call. ticker = KR 6-digit or US symbol. Omit financials_url.\n"
+        "5) why must cite the concrete signal in one short Korean 합니다/습니다 sentence.\n"
+        "JSON only:\n"
+        '{"match_stock":{"name":"SK하이닉스","ticker":"000660","market":"KR","why":"외국인 순매수와 거래대금 상위 소식에 가장 분명합니다."}}\n'
+        f"Recipient: {user.display_name}\n"
+        f"{profile_brief(user, pref)}\n"
+        f"Topics: {topics}\n"
+        f"Customization: {custom}\n"
+        f"Candidates:\n{candidates_as_prompt_block(candidates) if candidates else '(none)'}\n"
+    )
+    _emit(on_progress, "curate")
+    llm_started = perf_counter()
+    text, usage = llm_service.chat_completion(
+        db,
+        user_id=user.id,
+        purpose="digest_curate",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Return only valid JSON for one listed stock pick grounded in candidate signals. "
+                    "Never invent tickers. Avoid Samsung unless clearly the top signal."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.35,
+        max_tokens=400,
+    )
+    timings["llm_ms"] = int(timings.get("llm_ms") or 0) + elapsed_ms(llm_started)
+    if not text:
+        return None, classify_llm_skip_reason(usage), ""
+    try:
+        data = parse_json_object(text)
+        if data is None:
+            return None, "invalid_json", text[:2000]
+        return data.get("match_stock"), "", text[:2000]
+    except Exception:
+        return None, "invalid_json", (text or "")[:2000]
+
+
+def _curate_stock_pick(
+    db: Session,
+    user: User,
+    pref: Preference,
+    candidates: list[SourceItem],
+    timings: dict[str, int],
+    on_progress: ProgressCb | None,
+) -> tuple[list[dict[str, str]], str, str, str, str]:
+    from app.services.roles import parse_role_settings
+    from app.services.stock_match import heuristic_match_stock, parse_match_stock
+
+    settings = parse_role_settings(getattr(pref, "role_settings", "") or "{}")
+    market = str(settings.get("investor_market") or "국내증시")
+    # Prefer finance-portal / signal-heavy rows for the model context.
+    ordered = sorted(
+        candidates,
+        key=lambda item: (
+            0
+            if any(
+                token in f"{item.source} {item.site_id} {item.title} {item.summary}".lower()
+                for token in (
+                    "외국인",
+                    "거래대금",
+                    "거래량",
+                    "시간외",
+                    "순매수",
+                    "특징주",
+                    "naver",
+                    "네이버",
+                    "한경",
+                    "매경",
+                    "dart",
+                )
+            )
+            else 1,
+            item.list_rank or 99,
+        ),
+    )
+    focus = ordered[:24] if ordered else candidates
+    raw_match, skip_reason, llm_raw = _llm_curate_stock(
+        db, user, pref, focus, timings, on_progress
+    )
+    picked = parse_match_stock(raw_match)
+    curator = "llm"
+    if not picked:
+        picked = heuristic_match_stock(_candidate_dicts(candidates), market=market)
+        curator = "heuristic"
+    return [picked], "", curator, skip_reason, llm_raw
 
 
 def build_digest_preview(
@@ -877,39 +1333,64 @@ def build_digest_preview(
     _emit(on_progress, "crawl")
     crawl_started = perf_counter()
     raw = shared_candidates if shared_candidates is not None else gather_candidates(topics, preferred_sites=sites)
+    _emit(on_progress, "preprocess")
     candidates = personalize_candidates(raw, user, pref)
     crawl_ms = elapsed_ms(crawl_started)
 
     layer_ms: dict[str, int] = {"llm_ms": 0, "aggregation_ms": 0, "format_ms": 0}
     _emit(on_progress, "curate")
-    from app.services.roles import assistant_name_for_role, parse_role_settings, parse_roles, topics_for_role
+    from app.services.roles import (
+        assistant_name_for_role,
+        default_topics_for_role,
+        parse_role_settings,
+        parse_roles,
+        topics_for_role,
+    )
 
     roles = parse_roles(getattr(pref, "roles", "") or "")
     role_settings = parse_role_settings(getattr(pref, "role_settings", "") or "{}")
     agg_started = perf_counter()
-    if len(roles) > 1:
+    if roles:
         used_urls: set[str] = set()
         labeled: list[dict[str, str]] = []
         curator = "heuristic"
         skip_reason = ""
         llm_raw = ""
         for role in roles:
-            role_topics = topics_for_role(topics, role) or topics
-            role_pool = [item for item in filter_candidates_for_role(candidates, role) if item.url not in used_urls]
-            if not role_pool:
-                role_pool = [item for item in candidates if item.url not in used_urls] or list(candidates)
+            role_topics = topics_for_role(topics, role) or default_topics_for_role(role, role_settings)
+            role_pool = [
+                item
+                for item in filter_candidates_for_role(
+                    candidates,
+                    role,
+                    user_sources=sites,
+                    role_topics=role_topics,
+                )
+                if item.url not in used_urls
+            ]
             focus = _PrefFocus(pref, topics=role_topics, roles=[role])
-            role_items, llm_title, role_curator, skip, raw = _curate_three(
-                db,
-                user,
-                focus,
-                role_pool,
-                role_topics,
-                f"{seed}:{role}",
-                layer_ms,
-                on_progress,
-                role_pool,
-            )
+            if role == "stock_analyst":
+                role_items, llm_title, role_curator, skip, raw = _curate_stock_pick(
+                    db,
+                    user,
+                    focus,
+                    role_pool,
+                    layer_ms,
+                    on_progress,
+                )
+            else:
+                role_items, llm_title, role_curator, skip, raw = _curate_three(
+                    db,
+                    user,
+                    focus,
+                    role_pool,
+                    role_topics,
+                    f"{seed}:{role}",
+                    layer_ms,
+                    on_progress,
+                    role_pool,
+                    role=role,
+                )
             if role_curator == "llm":
                 curator = "llm"
                 if llm_title:
@@ -917,17 +1398,23 @@ def build_digest_preview(
             skip_reason = skip_reason or skip
             llm_raw = llm_raw or raw
             aide = assistant_name_for_role(role_settings, role)
-            for row in role_items[:3]:
+            bundle = _role_send_items(role_items, role=role)
+            for row in bundle:
                 row["assistant"] = aide
                 row["role"] = role
-                if row.get("url"):
+                if row.get("url") and not _is_match_stock(row):
                     used_urls.add(row["url"])
-            labeled.extend(role_items[:3])
+            labeled.extend(bundle)
         aggregation_ms = elapsed_ms(agg_started)
         _emit(on_progress, "format")
         fmt_started = perf_counter()
         body = _format_body(name, labeled, pref, topics, reviewed_count=len(candidates), now=now)
-        format_ms = elapsed_ms(fmt_started)
+        format_only_ms = elapsed_ms(fmt_started)
+        _emit(on_progress, "enrich")
+        enrich_started = perf_counter()
+        labeled, body = _apply_agent_enrichment(user, pref, labeled, body)
+        enrich_ms = elapsed_ms(enrich_started)
+        format_ms = format_only_ms + enrich_ms
         return DigestPreview(
             title=title,
             body=body,
@@ -969,7 +1456,12 @@ def build_digest_preview(
     _emit(on_progress, "format")
     fmt_started = perf_counter()
     body = _format_body(name, items, pref, topics, reviewed_count=len(candidates), now=now)
-    format_ms = elapsed_ms(fmt_started)
+    format_only_ms = elapsed_ms(fmt_started)
+    _emit(on_progress, "enrich")
+    enrich_started = perf_counter()
+    items, body = _apply_agent_enrichment(user, pref, items, body)
+    enrich_ms = elapsed_ms(enrich_started)
+    format_ms = format_only_ms + enrich_ms
     return DigestPreview(
         title=title,
         body=body,
@@ -1018,11 +1510,15 @@ def build_test_digest_preview(
     if len(roles) > 1:
         items: list[dict[str, str]] = []
         for index, role in enumerate(roles):
-            batch = _label_picked_items(
-                _static_fallback(topics, f"{seed}:{role}", offset=index * 3),
-                pref,
-                [],
-                topics,
+            batch = _role_send_items(
+                _label_picked_items(
+                    _static_fallback(topics, f"{seed}:{role}", offset=index * 3),
+                    pref,
+                    [],
+                    topics,
+                    role=role,
+                ),
+                role=role,
             )
             aide = assistant_name_for_role(role_settings, role)
             for row_i, row in enumerate(batch):
@@ -1032,7 +1528,17 @@ def build_test_digest_preview(
                     row["url"] = f"{row['url']}#{role}-{row_i}"
             items.extend(batch)
     else:
-        items = _label_picked_items(_static_fallback(topics, seed), pref, [], topics)
+        role = roles[0] if roles else None
+        items = _role_send_items(
+            _label_picked_items(
+                _static_fallback(topics, seed),
+                pref,
+                [],
+                topics,
+                role=role,
+            ),
+            role=role,
+        )
         if roles:
             aide = assistant_name_for_role(role_settings, roles[0])
             for row in items:
@@ -1104,6 +1610,7 @@ def create_digest(
     if pref.timezone != SEOUL:
         pref.timezone = SEOUL
         db.add(pref)
+        db.commit()
     with peak_sampler() as peak:
         preview = build_digest_preview(
             db, user, pref, on_progress=on_progress, shared_candidates=shared_candidates

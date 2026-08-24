@@ -1,5 +1,7 @@
 """Source gather + catalog parity tests."""
 
+from datetime import datetime, timezone
+
 from app.catalog.ref_sites import all_site_ids, catalog_payload, groups_for_mega, site_label
 from app.services.digest import _heuristic_pick
 from app.services.sources import HtmlListSpec, SourceItem, catalog_site_ids, collector_site_ids, gather_candidates
@@ -196,6 +198,35 @@ def test_youtube_rss_keeps_only_videos_over_10k_views():
         "유튜브", "채널", "https://www.youtube.com/feeds/videos.xml", raw, limit=5
     )
     assert [item.url for item in items] == ["https://www.youtube.com/watch?v=hit01"]
+
+
+def test_hn_rss_reads_points_past_summary_truncation():
+    long_url = "https://example.com/" + ("a" * 180)
+    raw = f"""<?xml version="1.0"?>
+    <rss version="2.0">
+      <channel>
+        <item>
+          <title>Show HN: widget</title>
+          <link>https://news.ycombinator.com/item?id=1</link>
+          <description><![CDATA[<p>Article URL: {long_url}</p><p>Comments URL: https://news.ycombinator.com/item?id=1</p><p>Points: 214</p><p># Comments: 87</p>]]></description>
+          <pubDate>Mon, 17 Aug 2026 12:00:00 +0000</pubDate>
+        </item>
+      </channel>
+    </rss>
+    """
+    now = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
+    items = sources_mod._parse_feed_body(
+        "커뮤니티",
+        "HN",
+        "https://hnrss.org/frontpage",
+        raw,
+        limit=5,
+        now=now,
+    )
+    assert len(items) == 1
+    assert items[0].points == 214
+    assert items[0].comments == 87
+    assert items[0].list_rank == 1
 
 
 def test_catalog_unknown_id_echoes_and_mega_has_groups():

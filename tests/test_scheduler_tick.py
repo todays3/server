@@ -89,6 +89,7 @@ async def test_tick_morning_digests_skips_then_sends(tmp_path, monkeypatch):
     monkeypatch.setattr(sch, "SessionLocal", TestingSession)
     sch._sent_slots.clear()
     sch._prepared_slots.clear()
+    sch._inflight_prepares.clear()
     await sch.tick_morning_digests()
     await sch.tick_morning_digests()
 
@@ -108,6 +109,7 @@ async def test_tick_morning_digests_skips_then_sends(tmp_path, monkeypatch):
     db.close()
     sch._sent_slots.clear()
     sch._prepared_slots.clear()
+    sch._inflight_prepares.clear()
     clear_shared_crawls()
 
     items = [
@@ -123,3 +125,45 @@ async def test_tick_morning_digests_skips_then_sends(tmp_path, monkeypatch):
 
     monkeypatch.setattr("app.services.delivery.send_digest_via_kakao", send_ok)
     await sch.tick_morning_digests()
+
+
+@pytest.mark.asyncio
+async def test_send_job_does_not_start_second_create_while_prepare_runs(monkeypatch):
+    created = {"n": 0}
+
+    class FakeUser:
+        id = 1
+        status = "approved"
+
+    class FakeDb:
+        def get(self, *_a, **_k):
+            return FakeUser()
+
+        def close(self):
+            return None
+
+        def refresh(self, *_a, **_k):
+            return None
+
+    monkeypatch.setattr(sch, "SessionLocal", FakeDb)
+    monkeypatch.setattr(sch, "_already_sent", lambda *_a, **_k: False)
+    monkeypatch.setattr(sch, "_find_prepared_digest", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        sch, "aware_now", lambda _tz: datetime(2026, 8, 20, 7, 40, tzinfo=ZoneInfo("Asia/Seoul"))
+    )
+    monkeypatch.setattr(sch, "_create_scheduled_digest", lambda *_a, **_k: created.__setitem__("n", created["n"] + 1) or 99)
+    job = sch.DueJob(
+        user_id=1,
+        slot_label="07:30",
+        phase="send",
+        day="2026-08-20",
+        tz_name="Asia/Seoul",
+        lead_ms=40_000,
+    )
+    sch._inflight_prepares.clear()
+    sch._inflight_prepares.add((1, "2026-08-20", "07:30"))
+    try:
+        await sch.execute_send_job(job)
+        assert created["n"] == 0
+    finally:
+        sch._inflight_prepares.clear()

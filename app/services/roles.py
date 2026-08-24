@@ -7,6 +7,7 @@ from typing import Literal, TypedDict
 
 DeskRoleId = Literal[
     "investor",
+    "stock_analyst",
     "developer",
     "doctor",
     "semiconductor",
@@ -22,6 +23,7 @@ JobSeekerLevel = Literal["intern", "new", "experienced"]
 
 ROLE_LABELS: dict[str, str] = {
     "investor": "일반 개미 투자자",
+    "stock_analyst": "주식 애널리스트",
     "developer": "소프트웨어 개발자",
     "doctor": "의사",
     "semiconductor": "반도체 소자 설계 및 검증 엔지니어",
@@ -36,6 +38,7 @@ ROLE_LABELS: dict[str, str] = {
 
 ROLE_TOPIC_MEGAS: dict[str, list[str]] = {
     "investor": ["경제"],
+    "stock_analyst": ["경제"],
     "developer": ["IT"],
     "doctor": ["의학"],
     "semiconductor": ["반도체"],
@@ -71,6 +74,7 @@ class RoleSettings(TypedDict, total=False):
     job_seeker_level: JobSeekerLevel
     investor_market: str
     investor_themes: list[str]
+    investor_match_stock: bool
     music_genres: list[str]
     book_genres: list[str]
     movie_genres: list[str]
@@ -85,6 +89,7 @@ class RoleSettings(TypedDict, total=False):
 
 DEFAULT_ASSISTANT_NAMES: dict[str, str] = {
     "investor": "서연",
+    "stock_analyst": "도윤",
     "developer": "민준",
     "doctor": "지원",
     "semiconductor": "하늘",
@@ -97,91 +102,99 @@ DEFAULT_ASSISTANT_NAMES: dict[str, str] = {
     "performing_arts": "예린",
 }
 
-# Representative industry archetypes — default voice for LLM curation.
+# Compact English personas for LLM prompts. Kakao text stays Korean 합니다/습니다.
 ASSISTANT_PERSONAS: dict[str, dict[str, str]] = {
     "investor": {
-        "archetype": "동네 투자 동아리를 이끄는 꼼꼼한 개미 투자자",
+        "archetype": "careful retail investor who runs a neighborhood investing club",
         "voice": (
-            "친근하지만 숫자·테마·수급을 자연스럽게 언급합니다. "
-            "'요즘 핫한 테마', '변동성', '수급' 같은 말버릇이 있습니다. "
-            "확정 수익을 약속하지 않고, 한 줄로 리스크도 짚습니다."
+            "Kakao Korean 합니다/습니다; friendly; mention 테마/변동성/수급 naturally; "
+            "never promise returns; one-line risk."
+        ),
+    },
+    "stock_analyst": {
+        "archetype": "stock analyst who reads filings and flow",
+        "voice": (
+            "Kakao Korean 합니다/습니다; one listed name only; say it is not a buy call; "
+            "tie to today's tape; attach a financials URL. Do not list 3 articles."
         ),
     },
     "developer": {
-        "archetype": "실무 10년차 시니어 소프트웨어 개발자",
+        "archetype": "senior software engineer who tracks shipping tech trends",
         "voice": (
-            "짧고 기술적으로 말합니다. 트렌드를 '실무에 어떻게 붙는지' 관점으로 전달합니다. "
-            "마이그레이션·호환·운영 부담을 한 줄 넣고, buzzword 나열만 하지 않습니다."
+            "Kakao Korean 합니다/습니다; short and technical; how the new tech lands in production; "
+            "one line on migration/compat/ops; no evergreen tutorials or buzzword lists."
         ),
     },
     "doctor": {
-        "archetype": "바쁘지만 근거 중심인 임상 전공의·레지던트",
+        "archetype": "evidence-first clinical resident",
         "voice": (
-            "차분하고 신중합니다. '근거상', '임상에서', '가이드라인' 같은 표현을 씁니다. "
-            "단정적 치료 권고는 피하고, 환자·의료진에게 실질적으로 도움이 되는 포인트를 짚습니다."
+            "Kakao Korean 합니다/습니다; calm; words like 근거상/임상에서/가이드라인; "
+            "no treatment orders; one practical point for patients or staff."
         ),
     },
     "semiconductor": {
-        "archetype": "팹·설계 현장을 아는 반도체 베테랑 엔지니어",
+        "archetype": "veteran fab/design engineer",
         "voice": (
-            "공정·수율·nm·스펙 같은 용어를 당연히 씁니다. "
-            "뉴스 헤드라인을 '공정/회로/검증에 무엇이 바뀌는지'로 번역해 전달합니다."
+            "Kakao Korean 합니다/습니다; use process/yield/nm/spec terms; "
+            "translate headlines into what changes in process/circuit/verification."
         ),
     },
     "job_seeker": {
-        "archetype": "채용 카페에서 후배를 챙기는 선배 멘토",
+        "archetype": "mentor who helps juniors in hiring cafes",
         "voice": (
-            "따뜻하지만 현실적으로 말합니다. '요즘 공고', '서류', '시장 비중'을 짚어 줍니다. "
-            "과장된 cheerleading 대신, 지금 준비하면 좋은 한 가지를 구체적으로 제안합니다."
+            "Kakao Korean 합니다/습니다; warm but realistic; 공고/서류/시장 비중; "
+            "one concrete prep step, not empty cheerleading."
         ),
     },
     "music": {
-        "archetype": "차트와 신곡을 매일 체크하는 음악 업계 실무자",
+        "archetype": "music-industry desk who checks charts daily",
         "voice": (
-            "장르·차트·아티스트 흐름을 짧게 짚습니다. "
-            "링크는 멜론·지니·유튜브 등 바로 들을 수 있는 곳을 우선합니다."
+            "Kakao Korean 합니다/습니다; genre/chart/artist in one beat; "
+            "prefer Melon/Genie/YouTube listen links."
         ),
     },
     "reader": {
-        "archetype": "서점과 출판 트렌드를 꿰뚫는 독서 큐레이터",
+        "archetype": "book curator who tracks store and publisher trends",
         "voice": (
-            "베스트셀러·신간 흐름을 장르별로 정리합니다. "
-            "링크는 알라딘·예스24 등 미리 읽기·목차를 볼 수 있는 곳을 우선합니다."
+            "Kakao Korean 합니다/습니다; bestsellers/new titles by genre; "
+            "prefer Aladin/Yes24 preview or TOC links."
         ),
     },
     "movie": {
-        "archetype": "극장가와 박스오피스를 매일 보는 영화 마니아",
+        "archetype": "box-office watcher",
         "voice": (
-            "한국 상영 중인 국내·해외 영화 위주로 짚습니다. "
-            "링크는 CGV·무비차트·왓챠 등 예고·상영 정보를 볼 수 있는 곳을 우선합니다."
+            "Kakao Korean 합니다/습니다; films now in Korean theaters; "
+            "prefer CGV/movie-chart/Watcha trailer or showtimes."
         ),
     },
     "otaku": {
-        "archetype": "애니·라노벨·만화 신작을 놓치지 않는 덕후 큐레이터",
+        "archetype": "anime/LN/manga new-release curator",
         "voice": (
-            "애니·라노벨·만화를 각 1개씩 총 3개로 골라 전달합니다. "
-            "링크는 미리보기·1화·목차를 볼 수 있는 곳을 우선합니다."
+            "Kakao Korean 합니다/습니다; one anime, one LN, one manga; "
+            "prefer preview/ep1/TOC links."
         ),
     },
     "gaming": {
-        "archetype": "신작·업데이트·e스포츠를 매일 체크하는 게임 마니아",
+        "archetype": "player who tracks launches, patches, esports",
         "voice": (
-            "장르·플랫폼·업데이트 흐름을 짧게 짚습니다. "
-            "링크는 인베·스팀·IGN 등 해당 게임 소식을 바로 볼 수 있는 곳을 우선합니다."
+            "Kakao Korean 합니다/습니다; genre/platform/patch in one beat; "
+            "prefer Inven/Steam/IGN story pages."
         ),
     },
     "performing_arts": {
-        "archetype": "대학로와 뮤지컬 예매율을 매일 보는 극예술 큐레이터",
+        "archetype": "performing-arts curator watching Daehangno and musicals",
         "voice": (
-            "연극·뮤지컬·넌버벌 등 극예술 소식을 장르별로 짧게 짚습니다. "
-            "링크는 PlayDB·인터파크·국립극장 등 해당 공연 소식을 바로 볼 수 있는 곳을 우선합니다."
+            "Kakao Korean 합니다/습니다; play/musical/nonverbal by genre; "
+            "prefer PlayDB/Interpark/National Theater pages."
         ),
     },
 }
 
 
 def assistant_persona(role: str) -> dict[str, str]:
-    return ASSISTANT_PERSONAS.get(role, {"archetype": "하루만장 비서", "voice": "친절하고 간결하게 전달합니다."})
+    return ASSISTANT_PERSONAS.get(
+        role, {"archetype": "Harumunjang aide", "voice": "Kakao Korean 합니다/습니다; kind and brief."}
+    )
 
 
 def _normalize_role(role: str) -> str:
@@ -235,6 +248,8 @@ def parse_role_settings(raw: str) -> RoleSettings:
     themes = data.get("investor_themes")
     if isinstance(themes, list):
         out["investor_themes"] = [str(t).strip() for t in themes if str(t).strip()]
+    if isinstance(data.get("investor_match_stock"), bool):
+        out["investor_match_stock"] = data["investor_match_stock"]
     for key in (
         "music_genres",
         "book_genres",
@@ -279,6 +294,62 @@ def topics_for_role(topics: list[str], role: str) -> list[str]:
     return matched
 
 
+def default_topics_for_role(role: str, settings: RoleSettings | dict[str, object] | None = None) -> list[str]:
+    """Fallback topics when the user has no mega-matching tags for this desk."""
+    role = _normalize_role(role)
+    settings = settings or {}
+    if role == "developer":
+        return ["IT/개발/all"]
+    if role == "doctor":
+        return ["의학/진료과/all"]
+    if role == "semiconductor":
+        return ["반도체/기술동향/all"]
+    if role == "job_seeker":
+        targets = settings.get("job_seeker_targets") if isinstance(settings, dict) else None
+        if isinstance(targets, list) and targets:
+            return [f"커리어/희망직무/{t}" for t in targets if str(t).strip()]
+        return ["커리어/이직/공고"]
+    if role in {"investor", "stock_analyst"}:
+        market = str(settings.get("investor_market") or "국내증시")
+        themes = settings.get("investor_themes") if isinstance(settings, dict) else None
+        if isinstance(themes, list) and themes:
+            return [f"경제/주식/{market}/{t}" for t in themes if str(t).strip()]
+        return [f"경제/주식/{market}/시황"]
+    if role == "music":
+        genres = settings.get("music_genres") if isinstance(settings, dict) else None
+        if isinstance(genres, list) and genres:
+            return [f"음악/장르/{g}" for g in genres if str(g).strip()]
+        return ["음악/장르/K-POP"]
+    if role == "reader":
+        genres = settings.get("book_genres") if isinstance(settings, dict) else None
+        if isinstance(genres, list) and genres:
+            return [f"도서/장르/{g}" for g in genres if str(g).strip()]
+        return ["도서/장르/소설"]
+    if role == "movie":
+        genres = settings.get("movie_genres") if isinstance(settings, dict) else None
+        if isinstance(genres, list) and genres:
+            return [f"영화/장르/{g}" for g in genres if str(g).strip()]
+        return ["영화/장르/액션"]
+    if role == "otaku":
+        return ["오타쿠/애니/액션", "오타쿠/라노벨/판타지", "오타쿠/만화/웹툰"]
+    if role == "gaming":
+        genres = settings.get("gaming_genres") if isinstance(settings, dict) else None
+        if isinstance(genres, list) and genres:
+            return [f"게임/장르/{g}" for g in genres if str(g).strip()]
+        return ["게임/장르/RPG"]
+    if role == "performing_arts":
+        genres = (
+            settings.get("performing_arts_genres")
+            if isinstance(settings, dict)
+            else None
+        ) or (settings.get("theater_genres") if isinstance(settings, dict) else None)
+        if isinstance(genres, list) and genres:
+            return [f"극예술/장르/{g}" for g in genres if str(g).strip()]
+        return ["극예술/장르/뮤지컬"]
+    megas = ROLE_TOPIC_MEGAS.get(role, [])
+    return [f"{megas[0]}/all"] if megas else []
+
+
 def role_tokens(roles: list[str]) -> list[str]:
     tokens: list[str] = []
     for role in roles:
@@ -307,53 +378,84 @@ def pick_digest_assistant(roles: list[str], settings: RoleSettings, *, day: int,
 def roles_profile_brief(roles: list[str], settings: RoleSettings) -> str:
     if not roles:
         return ""
-    lines: list[str] = ["선택한 어시스턴트 (성격·말투는 각 대표 인간상을 따르세요):"]
+    lines: list[str] = ["Hired assistants (Kakao Korean voice follows each archetype):"]
     for role in roles:
         role = _normalize_role(role)
         label = ROLE_LABELS.get(role, role)
         aide = assistant_name_for_role(settings, role)
         persona = assistant_persona(role)
-        lines.append(f"· {aide} — {persona['archetype']}")
-        lines.append(f"  말투: {persona['voice']}")
+        lines.append(f"- {aide} — {persona['archetype']}")
+        lines.append(f"  Voice: {persona['voice']}")
         if role == "investor":
             market = settings.get("investor_market") or "국내증시"
             themes = settings.get("investor_themes") or []
-            lines.append(f"  초점: 선택 테마({market}) {', '.join(themes) or '미정'} · 테마별 핫 이슈 하루 1개")
+            lines.append(
+                f"  Focus: TODAY's equity/macro market only ({market}); "
+                f"themes {', '.join(themes) or '시황'} · 3 market articles. "
+                "Never chip-process papers or off-domain lifestyle."
+            )
+        elif role == "stock_analyst":
+            market = settings.get("investor_market") or "국내증시"
+            themes = settings.get("investor_themes") or []
+            lines.append(
+                f"  Focus: themes ({market}) {', '.join(themes) or '시황'} · 1 listed stock/day. "
+                "Ground the pick in today's tape signals from finance sources "
+                "(foreign/institution flow, trading value leaders, after-hours movers, filings/news). "
+                "Do not default to Samsung unless it is the clearest signal. "
+                "Do not pick 3 articles. Not a buy call. Attach a financials URL. Market domain only."
+            )
         elif role == "job_seeker":
             targets = settings.get("job_seeker_targets") or []
             level = JOB_SEEKER_LEVEL_LABELS.get(settings.get("job_seeker_level") or "new", "신입")
-            lines.append(f"  초점: 희망 분야 {', '.join(targets) or '미정'} · 단계 {level} · 채용 시장 비중")
+            lines.append(f"  Focus: fields {', '.join(targets) or 'unset'} · stage {level} · hiring mix")
         elif role == "music":
             genres = settings.get("music_genres") or []
-            lines.append(f"  초점: 장르 {', '.join(genres) or '미정'} · 트렌드 음악 3개 · URL은 감상 가능한 곳")
+            lines.append(f"  Focus: genres {', '.join(genres) or 'unset'} · 3 tracks · listen URLs")
         elif role == "reader":
             genres = settings.get("book_genres") or []
-            lines.append(f"  초점: 장르 {', '.join(genres) or '미정'} · 트렌드 도서 3개 · URL은 미리보기·목차")
+            lines.append(f"  Focus: genres {', '.join(genres) or 'unset'} · 3 books · preview/TOC URLs")
         elif role == "movie":
             genres = settings.get("movie_genres") or []
             lines.append(
-                f"  초점: 장르 {', '.join(genres) or '미정'} · 한국 상영 중 국내·해외 영화 3개 · URL은 예고·상영 정보"
+                f"  Focus: genres {', '.join(genres) or 'unset'} · 3 films in KR theaters · trailer/showtimes"
             )
         elif role == "otaku":
             anime = settings.get("otaku_anime_genres") or []
             ln = settings.get("otaku_ln_genres") or []
             manga = settings.get("otaku_manga_genres") or []
             lines.append(
-                f"  초점: 애니 {', '.join(anime) or '미정'} · 라노벨 {', '.join(ln) or '미정'} · 만화 {', '.join(manga) or '미정'}"
+                f"  Focus: anime {', '.join(anime) or 'unset'} · LN {', '.join(ln) or 'unset'} · manga {', '.join(manga) or 'unset'}"
             )
-            lines.append("  애니·라노벨·만화 각 1개씩 총 3개 · URL은 미리보기·1화·목차")
+            lines.append("  One anime + one LN + one manga. Preview/ep1/TOC URLs.")
         elif role == "gaming":
             genres = settings.get("gaming_genres") or []
-            lines.append(f"  초점: 장르 {', '.join(genres) or '미정'} · 트렌드 게임 소식 3개 · URL은 해당 소식 페이지")
+            lines.append(f"  Focus: genres {', '.join(genres) or 'unset'} · 3 game stories · story URLs")
         elif role == "performing_arts":
             genres = settings.get("performing_arts_genres") or settings.get("theater_genres") or []
             lines.append(
-                f"  초점: 장르 {', '.join(genres) or '미정'} · 트렌드 극예술 소식 3개 · URL은 해당 공연 소식·예매 페이지"
+                f"  Focus: genres {', '.join(genres) or 'unset'} · 3 performing-arts stories · show/ticket URLs"
             )
-        elif role in {"developer", "doctor", "semiconductor"}:
-            lines.append(f"  초점: {label} 분야 기술·트렌드 주류")
+        elif role == "developer":
+            lines.append(
+                "  Focus (priority order): 1) latest tech trends / new stack adoption as #1, "
+                "2) only from verified outlets (official blogs, HN/GeekNews/InfoQ/D2, reputable eng blogs), "
+                "3) skip evergreen how-tos and old framework primers."
+            )
+            lines.append(
+                "  Angles: 흐름 = field-wide latest tech trend; 이슈 = one concrete release/CVE/migration this week; "
+                "인물 = eng leader commenting on that trend, or hiring/move of someone tied to that tech — "
+                "not celebrity gossip or unrelated founder bios."
+            )
+        elif role == "semiconductor":
+            lines.append(
+                "  Focus: semiconductor process/device/design/verification trends only "
+                "(EUV, GAA, yield, foundry nodes, ISSCC/IEDM). Reject stock-tape and buy/sell calls."
+            )
+        elif role == "doctor":
+            lines.append(f"  Focus: mainstream {label} clinical/evidence only")
     if len(roles) > 1:
         lines.append(
-            "  여러 어시스턴트가 있으면 각 어시스턴트마다 소식 3개를 따로 고르세요. 한 브리프로 합치지 마세요."
+            "If several assistants are hired, pick separately per role. "
+            "News aides: 3 stories. Stock analyst: 1 listed stock. Do not merge into one brief."
         )
     return "\n".join(lines)

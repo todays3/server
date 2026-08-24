@@ -30,6 +30,12 @@ class SourceItem:
     site_id: str = ""
     pick_reason: str = ""
     published_at: datetime | None = None
+    views: int | None = None
+    points: int | None = None
+    comments: int | None = None
+    list_rank: int | None = None
+    job_hits: int = 0
+    topic_hits: int = 0
 
 
 @dataclass(frozen=True)
@@ -55,9 +61,15 @@ _YT_CHANNELS: dict[str, tuple[str, str]] = {
 
 # Static RSS catalogs keyed by topic fragment match
 _RSS_CATALOG: list[tuple[str, str, str, str]] = [
-    ("아티클", "Google News KR 주식", "주식", "https://news.google.com/rss/search?q=%ED%95%9C%EA%B5%AD+%EC%A3%BC%EC%8B%9D&hl=ko&gl=KR&ceid=KR:ko"),
+    ("아티클", "Google News KR 주식", "주식", "https://news.google.com/rss/search?q=%ED%95%9C%EA%B5%AD+%EC%A3%BC%EC%8B%9D+%EC%8B%9C%ED%99%A9&hl=ko&gl=KR&ceid=KR:ko"),
     ("아티클", "Google News US markets", "미국증시", "https://news.google.com/rss/search?q=US+stock+market&hl=en-US&gl=US&ceid=US:en"),
-    ("아티클", "Google News 반도체", "반도체", "https://news.google.com/rss/search?q=%EB%B0%98%EB%8F%84%EC%B2%B4&hl=ko&gl=KR&ceid=KR:ko"),
+    # Process/device query — hint 기술동향 so investor theme "…/반도체" does not pull eng news.
+    (
+        "아티클",
+        "Google News 반도체 공정",
+        "기술동향",
+        "https://news.google.com/rss/search?q=%EB%B0%98%EB%8F%84%EC%B2%B4+%EC%86%8C%EC%9E%90+OR+%EA%B3%B5%EC%A0%95+OR+EUV+OR+%ED%8C%8C%EC%9A%B4%EB%93%9C%EB%A6%AC&hl=ko&gl=KR&ceid=KR:ko",
+    ),
     ("아티클", "Google News AI", "AI", "https://news.google.com/rss/search?q=artificial+intelligence&hl=en-US&gl=US&ceid=US:en"),
     ("아티클", "Google News 디자인", "디자인", "https://news.google.com/rss/search?q=%EB%94%94%EC%9E%90%EC%9D%B8+UX+UI&hl=ko&gl=KR&ceid=KR:ko"),
     ("아티클", "Google News UX", "UX", "https://news.google.com/rss/search?q=UX+design&hl=en-US&gl=US&ceid=US:en"),
@@ -92,6 +104,18 @@ def _topic_blob(topics: list[str]) -> str:
 def _primary_query(topics: list[str]) -> str:
     if not topics:
         return "technology"
+    blob = _topic_blob(topics)
+    # Economy desk: always ask for market tape, even when theme leaf is "반도체".
+    if any(x in blob for x in ("경제", "주식", "증시", "etf")):
+        if "미국" in blob:
+            return "미국 증시 시황"
+        return "한국 주식 시장 시황"
+    if "반도체" in blob or "기술동향" in blob:
+        return "반도체 소자 공정 EUV 파운드리 수율"
+    if "의학" in blob:
+        return "의학 임상 가이드라인"
+    if "커리어" in blob or "취업" in blob:
+        return "채용 공고 면접"
     q = topics[0].split("/")[-1].strip()
     return q if q and q != "all" else "technology"
 
@@ -104,13 +128,24 @@ def _feeds_for_topics(topics: list[str]) -> list[tuple[str, str, str]]:
         if not topics or hint.lower() in blob or any(hint.lower() in t.lower() for t in topics):
             picked.append((kind, name, url))
 
-    if any(x in blob for x in ("주식", "증시", "경제", "etf", "반도체")):
+    # Equity tape extras only for market topics — never for semiconductor mega alone.
+    if any(x in blob for x in ("주식", "증시", "경제", "etf")):
         for kind, name, hint, url in _RSS_CATALOG:
             if hint in ("주식", "미국증시") and (kind, name, url) not in picked:
                 picked.append((kind, name, url))
 
+    if not picked and topics:
+        # Avoid dumping KR stock + r/stocks as a blind default for unrelated desks.
+        q = _primary_query(topics)
+        gurl = (
+            "https://news.google.com/rss/search?q="
+            + quote_plus(q)
+            + "&hl=ko&gl=KR&ceid=KR:ko"
+        )
+        return [("아티클", f"Google News · {q}", gurl)]
+
     if not picked:
-        picked = [(k, n, u) for k, n, _, u in _RSS_CATALOG[:4]]
+        picked = [(k, n, u) for k, n, _, u in _RSS_CATALOG[:2]]
 
     if topics:
         q = _primary_query(topics)
@@ -126,14 +161,17 @@ def _feeds_for_topics(topics: list[str]) -> list[tuple[str, str, str]]:
 
 def _youtube_feeds_for_topics(topics: list[str]) -> list[tuple[str, str, str]]:
     blob = _topic_blob(topics)
+    # Semiconductor / non-finance desks: do not fall back to 삼프로TV.
+    if "반도체" in blob and not any(x in blob for x in ("주식", "경제", "증시")):
+        return []
+    match_blob = blob
+    if "연애" in blob and "라이프" not in blob:
+        match_blob = f"{blob} 라이프"
     out: list[tuple[str, str, str]] = []
     for label, (channel_id, hint) in _YT_CHANNELS.items():
-        if not topics or hint.lower() in blob or "주식" in blob or "경제" in blob or "라이프" in blob:
+        if not topics or hint.lower() in match_blob:
             url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
             out.append(("유튜브", label, url))
-    if not out:
-        label, (channel_id, _) = next(iter(_YT_CHANNELS.items()))
-        out.append(("유튜브", label, f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"))
     return out
 
 
@@ -194,14 +232,23 @@ def _parse_feed_body(
     for entry in parsed.entries[:scan_limit]:
         link = getattr(entry, "link", "") or ""
         title = _clean(getattr(entry, "title", "") or "제목 없음", 120)
-        summary = _clean(getattr(entry, "summary", "") or getattr(entry, "description", "") or "", 220)
+        raw_summary = str(getattr(entry, "summary", "") or getattr(entry, "description", "") or "")
+        summary = _clean(raw_summary, 220)
         if not link or not title:
             continue
+        from app.services.pick_reason import engagement_from_text, views_from_text
+
+        blob = _entry_metric_blob(entry, title, raw_summary)
+        points, comments = engagement_from_text(blob)
+        text_views = views_from_text(blob)
         if kind == "유튜브":
             from app.services.youtube import meets_view_floor, views_from_feed_entry
 
-            if not meets_view_floor(views_from_feed_entry(entry)):
+            views = views_from_feed_entry(entry) or text_views
+            if not meets_view_floor(views):
                 continue
+        else:
+            views = text_views
         published_at = resolve_published_at(feed_entry=entry, title=title, url=link, now=now)
         if not is_fresh(published_at, now=now):
             continue
@@ -213,11 +260,24 @@ def _parse_feed_body(
                 summary=summary or source,
                 source=source,
                 published_at=published_at,
+                views=views,
+                points=points,
+                comments=comments,
+                list_rank=len(items) + 1,
             )
         )
         if len(items) >= limit:
             break
     return items
+
+
+def _entry_metric_blob(entry: object, title: str, raw_summary: str) -> str:
+    """Full feed text for metrics — do not use the truncated summary."""
+    parts = [title, raw_summary, str(getattr(entry, "description", "") or "")]
+    content = getattr(entry, "content", None) or []
+    for block in content:
+        parts.append(str(getattr(block, "value", "") or block))
+    return " ".join(part for part in parts if part)
 
 
 def _parse_feed(kind: str, source: str, url: str, *, limit: int = 5) -> list[SourceItem]:
@@ -323,14 +383,29 @@ def _parse_html_list(
             continue
         if not is_fresh(published_at, now=now):
             continue
+        from app.services.pick_reason import engagement_from_text, views_from_text
+
+        points, comments = engagement_from_text(title)
+        code_match = re.search(r"code=(\d{6})", abs_url, re.I)
+        summary = f"{spec.source} 목록에서 수집"
+        display_title = title
+        if code_match:
+            code = code_match.group(1)
+            summary = f"{spec.source} · 종목코드 {code}"
+            if code not in display_title:
+                display_title = f"{display_title} ({code})" if display_title else code
         items.append(
             SourceItem(
                 kind=spec.kind,
-                title=title,
+                title=display_title,
                 url=abs_url,
-                summary=f"{spec.source} 목록에서 수집",
+                summary=summary,
                 source=spec.source,
                 published_at=published_at,
+                views=views_from_text(title),
+                points=points,
+                comments=comments,
+                list_rank=len(items) + 1,
             )
         )
         if len(items) >= spec.limit:
@@ -378,10 +453,15 @@ def _skip_destination_check(url: str) -> bool:
     return "youtube.com" in host or "youtu.be" in host
 
 
+# Cap destination probes: 100×8s was a silent crawl stall after RSS already finished.
+REACHABILITY_CHECK_CAP = 36
+REACHABILITY_TIMEOUT_SECONDS = 4.0
+
+
 def destination_is_missing(url: str) -> bool:
     if not url or _skip_destination_check(url):
         return False
-    fetched = _fetch(url, timeout=8.0)
+    fetched = _fetch(url, timeout=REACHABILITY_TIMEOUT_SECONDS)
     return page_is_missing(fetched.status_code, fetched.body)
 
 
@@ -390,16 +470,18 @@ def keep_reachable_items(items: list[SourceItem]) -> list[SourceItem]:
         return []
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
+    head = items[:REACHABILITY_CHECK_CAP]
+    tail = items[REACHABILITY_CHECK_CAP:]
     keep: dict[int, bool] = {}
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = {pool.submit(destination_is_missing, item.url): index for index, item in enumerate(items)}
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {pool.submit(destination_is_missing, item.url): index for index, item in enumerate(head)}
         for future in as_completed(futures):
             index = futures[future]
             try:
                 keep[index] = not future.result()
             except Exception:  # noqa: BLE001 — network blips keep the candidate
                 keep[index] = True
-    return [item for index, item in enumerate(items) if keep.get(index, True)]
+    return [item for index, item in enumerate(head) if keep.get(index, True)] + list(tail)
 
 
 # User-selected reference site id → RSS/Atom feeds
@@ -410,10 +492,25 @@ _SITE_FEEDS: dict[str, list[tuple[str, str, str]]] = {
             "네이버 증권·뉴스",
             "https://news.google.com/rss/search?q=%EC%BD%94%EC%8A%A4%ED%94%BC+%EC%A6%9D%EA%B6%8C&hl=ko&gl=KR&ceid=KR:ko",
         ),
+        (
+            "아티클",
+            "외국인·기관 수급",
+            "https://news.google.com/rss/search?q=%EC%99%B8%EA%B5%AD%EC%9D%B8+%EC%88%9C%EB%A7%A4%EC%88%98+OR+%EA%B8%B0%EA%B4%80+%EC%88%9C%EB%A7%A4%EC%88%98+%EC%A2%85%EB%AA%A9&hl=ko&gl=KR&ceid=KR:ko",
+        ),
+        (
+            "아티클",
+            "거래대금·급등 특징주",
+            "https://news.google.com/rss/search?q=%EA%B1%B0%EB%9E%98%EB%8C%80%EA%B8%88+%EC%83%81%EC%9C%84+OR+%ED%8A%B9%EC%A7%95%EC%A3%BC+OR+%EC%8B%9C%EA%B0%84%EC%99%B8+%EA%B8%89%EB%93%B1&hl=ko&gl=KR&ceid=KR:ko",
+        ),
         ("커뮤니티", "네이버 종목토론 이슈", "https://news.google.com/rss/search?q=%EC%A2%85%EB%AA%A9%ED%86%A0%EB%A1%A0&hl=ko&gl=KR&ceid=KR:ko"),
     ],
     "toss-securities": [
         ("아티클", "토스 증권·투자", "https://news.google.com/rss/search?q=%ED%86%A0%EC%8A%A4%EC%A6%9D%EA%B6%8C&hl=ko&gl=KR&ceid=KR:ko"),
+        (
+            "아티클",
+            "토스·국내 수급 이슈",
+            "https://news.google.com/rss/search?q=%EC%99%B8%EA%B5%AD%EC%9D%B8+%EC%88%9C%EB%A7%A4+OR+%EA%B1%B0%EB%9E%98%EB%8C%80%EA%B8%88+%EC%A2%85%EB%AA%A9&hl=ko&gl=KR&ceid=KR:ko",
+        ),
     ],
     "kakao-stock": [
         ("아티클", "카카오페이증권", "https://news.google.com/rss/search?q=%EC%B9%B4%EC%B9%B4%EC%98%A4%ED%8E%98%EC%9D%B4%EC%A6%9D%EA%B6%8C&hl=ko&gl=KR&ceid=KR:ko"),
@@ -424,10 +521,20 @@ _SITE_FEEDS: dict[str, list[tuple[str, str, str]]] = {
     "hankyung": [
         ("아티클", "한국경제 금융", "https://www.hankyung.com/feed/finance"),
         ("아티클", "한국경제 증권", "https://www.hankyung.com/feed/economy"),
+        (
+            "아티클",
+            "한경 특징주·수급",
+            "https://news.google.com/rss/search?q=site:hankyung.com+%ED%8A%B9%EC%A7%95%EC%A3%BC+OR+%EC%99%B8%EA%B5%AD%EC%9D%B8+%EC%88%9C%EB%A7%A4&hl=ko&gl=KR&ceid=KR:ko",
+        ),
     ],
     "mk-stock": [
         ("아티클", "매일경제", "https://www.mk.co.kr/rss/40300001/"),
         ("아티클", "매경 증권 뉴스", "https://news.google.com/rss/search?q=%EB%A7%A4%EC%9D%BC%EA%B2%BD%EC%A0%9C+%EC%A6%9D%EA%B6%8C&hl=ko&gl=KR&ceid=KR:ko"),
+        (
+            "아티클",
+            "매경 거래대금·시간외",
+            "https://news.google.com/rss/search?q=%EB%A7%A4%EC%9D%BC%EA%B2%BD%EC%A0%9C+%EA%B1%B0%EB%9E%98%EB%8C%80%EA%B8%88+OR+%EC%8B%9C%EA%B0%84%EC%99%B8&hl=ko&gl=KR&ceid=KR:ko",
+        ),
     ],
     "sampro": [
         ("유튜브", "삼프로TV", "https://www.youtube.com/feeds/videos.xml?channel_id=UChlgI3UHCOnwUGzWzbJEuYw"),
@@ -863,6 +970,32 @@ _SITE_FEEDS: dict[str, list[tuple[str, str, str]]] = {
 
 # Sites without reliable native RSS (or as secondary fallback): public HTML lists/search
 _SITE_HTML: dict[str, list[HtmlListSpec]] = {
+    "naver-finance": [
+        HtmlListSpec(
+            kind="커뮤니티",
+            source="네이버 거래량 상위",
+            url="https://finance.naver.com/sise/sise_quant.naver",
+            href_re=r"item/main\.naver\?code=\d{6}",
+            base="https://finance.naver.com",
+            limit=12,
+        ),
+        HtmlListSpec(
+            kind="커뮤니티",
+            source="네이버 거래대금 상위",
+            url="https://finance.naver.com/sise/sise_amount.naver",
+            href_re=r"item/main\.naver\?code=\d{6}",
+            base="https://finance.naver.com",
+            limit=12,
+        ),
+        HtmlListSpec(
+            kind="커뮤니티",
+            source="네이버 외국인 순매수",
+            url="https://finance.naver.com/sise/sise_deal_rank.naver",
+            href_re=r"item/main\.naver\?code=\d{6}",
+            base="https://finance.naver.com",
+            limit=12,
+        ),
+    ],
     "github-trending": [
         HtmlListSpec(
             kind="커뮤니티",
@@ -1047,6 +1180,9 @@ def gather_candidates(
     yt_limit = max(4, min(12, max(max_items // 10, 4)))
 
     site_feed_urls = {url for _k, _n, url in site_feeds}
+    from app.services.domain_gate import stamp_for_topics
+
+    topic_stamp = stamp_for_topics(topics)
 
     def add(item: SourceItem) -> bool:
         if item.url in seen:
@@ -1056,28 +1192,58 @@ def gather_candidates(
         return len(collected) >= cap
 
     for item in collect_youtube_items(topics, sites, limit_per=yt_limit):
-        if add(item):
+        stamped = item if item.site_id else replace(item, site_id=topic_stamp)
+        if add(stamped):
             break
 
     yt_got = {item.source for item in collected if item.kind == "유튜브"}
-    if len(collected) < cap:
-        for kind, source, url in feeds:
-            sid = _site_id_for_feed_url(url) if url in site_feed_urls else ""
-            for item in _parse_feed(kind, source, url, limit=feed_limit):
-                if add(replace(item, site_id=sid)):
-                    break
-            if len(collected) >= cap:
-                break
 
-    if len(collected) < cap:
-        for kind, source, url in yt_rss:
-            if source in yt_got:
-                continue
-            for item in _parse_feed(kind, source, url, limit=feed_limit):
-                if add(item):
-                    break
-            if len(collected) >= cap:
-                break
+    def _pull_feed(kind: str, source: str, url: str, *, site_id: str = "") -> list[SourceItem]:
+        rows = _parse_feed(kind, source, url, limit=feed_limit)
+        if not site_id:
+            return rows
+        return [replace(item, site_id=site_id) for item in rows]
+
+    def _pull_feeds_parallel(jobs: list[tuple[str, str, str, str]]) -> None:
+        if not jobs or len(collected) >= cap:
+            return
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        with ThreadPoolExecutor(max_workers=min(8, len(jobs))) as pool:
+            futures = {
+                pool.submit(_pull_feed, kind, source, url, site_id=sid): (kind, source, url)
+                for kind, source, url, sid in jobs
+            }
+            for future in as_completed(futures):
+                try:
+                    rows = future.result()
+                except Exception:  # noqa: BLE001
+                    continue
+                for item in rows:
+                    if add(item):
+                        return
+
+    if len(collected) < cap and feeds:
+        _pull_feeds_parallel(
+            [
+                (
+                    kind,
+                    source,
+                    url,
+                    (_site_id_for_feed_url(url) if url in site_feed_urls else topic_stamp),
+                )
+                for kind, source, url in feeds
+            ]
+        )
+
+    if len(collected) < cap and yt_rss:
+        _pull_feeds_parallel(
+            [
+                (kind, source, url, topic_stamp)
+                for kind, source, url in yt_rss
+                if source not in yt_got
+            ]
+        )
 
     if sites and len(collected) < cap:
         for item in _html_for_sites(sites, topics):
@@ -1095,6 +1261,17 @@ def candidates_as_prompt_block(items: list[SourceItem]) -> str:
         lines.append(f"   url={it.url}")
         if it.summary:
             lines.append(f"   summary={it.summary}")
+        metrics: list[str] = []
+        if it.views:
+            metrics.append(f"views={it.views}")
+        if it.points:
+            metrics.append(f"score={it.points}")
+        if it.comments:
+            metrics.append(f"comments={it.comments}")
+        if it.list_rank:
+            metrics.append(f"rank={it.list_rank}")
+        if metrics:
+            lines.append(f"   metrics={' '.join(metrics)}")
         if it.pick_reason:
             lines.append(f"   why={it.pick_reason}")
     return "\n".join(lines)

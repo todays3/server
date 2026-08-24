@@ -13,7 +13,7 @@ _GROUPS: list[tuple[str, str, list[str], list[tuple[str, str, str, str]]]] = [
     (
         "stock-kr",
         "국내 주식",
-        ["주식", "국내증시", "경제", "코스피", "코스닥", "반도체", "2차전지"],
+        ["주식", "국내증시", "경제", "코스피", "코스닥", "시황", "2차전지"],
         [
             (
                 "naver-finance",
@@ -388,7 +388,7 @@ _GROUPS: list[tuple[str, str, list[str], list[tuple[str, str, str, str]]]] = [
     (
         "kr-it",
         "국내 IT · 애그리게이터",
-        ["IT", "개발", "뉴스", "스타트업", "하드웨어", "반도체"],
+        ["IT", "개발", "뉴스", "스타트업", "하드웨어"],
         [
             (
                 "geeknews",
@@ -1073,8 +1073,9 @@ MEGA_TO_GROUPS: dict[str, list[str]] = {
     "라이프": ["life"],
     "커리어": ["career-news"],
     "뉴스": ["career-news", "kr-it"],
-    "반도체": ["kr-it", "stock-kr", "semi-academic"],
-    "의학": ["medicine-clinical", "kr-it"],
+    # Semiconductor desk stays on process/device sources — not stock portals or general IT.
+    "반도체": ["semi-academic"],
+    "의학": ["medicine-clinical"],
     "음악": ["music-kr", "music-global"],
     "도서": ["books-kr"],
     "영화": ["movies-kr"],

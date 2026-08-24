@@ -11,11 +11,22 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.auth import hash_password
+from app.config import get_settings
 from app.db import Base
 from app.models import Digest, Preference, User
 from app.services import scheduler as sch
 from app.services.shared_crawl import clear_shared_crawls
 from app.services.sources import SourceItem
+
+
+@pytest.fixture(autouse=True)
+def _disable_live_llm(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "")
+    monkeypatch.setenv("LLM_LOCAL_ENABLED", "false")
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 def _engine(tmp_path):

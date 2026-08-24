@@ -18,11 +18,33 @@ LAYER_COLUMNS = tuple(f"{key}_ms" for key in LAYER_KEYS)
 
 DEFAULT_LEAD_SECONDS = 40
 MIN_LEAD_SECONDS = 20
-MAX_LEAD_SECONDS = 90
 LEAD_PAD_MS = 5_000
-PREP_OUTLIER_MS = 75_000
-SEND_GRACE_MINUTES = 15
-TICK_SECONDS = 20
+# Include long local LLM runs when computing adaptive lead from history.
+PREP_OUTLIER_MS = 45 * 60_000
+SEND_TICK_SECONDS = 5
+PREPARE_TICK_SECONDS = 15
+TICK_SECONDS = SEND_TICK_SECONDS
+
+
+def prep_lead_floor_seconds() -> int:
+    from app.config import get_settings
+
+    return max(0, int(get_settings().schedule_prep_lead_minutes)) * 60
+
+
+def send_grace_minutes() -> int:
+    from app.config import get_settings
+
+    return max(1, int(get_settings().schedule_send_grace_minutes))
+
+
+def send_catchup_minutes() -> int:
+    """After grace, keep trying unsent drafts for this many minutes past the slot."""
+    from app.config import get_settings
+
+    grace = send_grace_minutes()
+    catchup = max(0, int(getattr(get_settings(), "schedule_send_catchup_minutes", 180) or 0))
+    return max(grace, catchup)
 
 
 def suggested_lead_minutes_from_seconds(seconds: int) -> int:
@@ -63,11 +85,13 @@ def total_ms(row: Any) -> int:
 
 
 def suggested_lead_seconds(prep_samples_ms: list[int]) -> int:
+    floor = prep_lead_floor_seconds()
     samples = [n for n in prep_samples_ms if 0 < n <= PREP_OUTLIER_MS]
     if not samples:
-        return DEFAULT_LEAD_SECONDS
-    seconds = math.ceil((percentile(samples, 90) + LEAD_PAD_MS) / 1000)
-    return max(MIN_LEAD_SECONDS, min(MAX_LEAD_SECONDS, seconds))
+        return max(floor, DEFAULT_LEAD_SECONDS)
+    adaptive = math.ceil((percentile(samples, 90) + LEAD_PAD_MS) / 1000)
+    adaptive = max(MIN_LEAD_SECONDS, adaptive)
+    return max(floor, adaptive)
 
 
 def suggested_lead_minutes(prep_samples_ms: list[int]) -> int:
@@ -99,9 +123,11 @@ def due_actions(
     slots: set[tuple[int, int]],
     lead_seconds: int,
 ) -> list[tuple[str, str]]:
+    """Return (slot_label, phase) where phase is prepare | send | catchup."""
     actions: list[tuple[str, str]] = []
     lead = timedelta(seconds=max(0, int(lead_seconds)))
-    grace = timedelta(minutes=SEND_GRACE_MINUTES)
+    grace = timedelta(minutes=send_grace_minutes())
+    catchup_span = timedelta(minutes=send_catchup_minutes())
     for hour, minute in sorted(slots):
         slot_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
         start_dt = slot_dt - lead
@@ -110,4 +136,11 @@ def due_actions(
             actions.append((label, "prepare"))
         elif slot_dt <= now < slot_dt + grace:
             actions.append((label, "send"))
+        else:
+            # Same calendar day: keep trying unsent drafts until catchup window ends
+            # (at least through end of local day for morning slots).
+            day_end = slot_dt.replace(hour=23, minute=59, second=59, microsecond=0)
+            catchup_end = max(slot_dt + catchup_span, day_end)
+            if slot_dt + grace <= now <= catchup_end and now.date() == slot_dt.date():
+                actions.append((label, "catchup"))
     return actions
