@@ -5,7 +5,8 @@ import bcrypt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.orm import Session, joinedload
 
 from app.config import get_settings
 from app.db import get_db
@@ -49,7 +50,9 @@ def get_authenticated_user(
     except (JWTError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="유효하지 않은 토큰입니다") from exc
 
-    user = db.get(User, user_id)
+    user = db.scalars(
+        select(User).options(joinedload(User.kakao)).where(User.id == user_id)
+    ).first()
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="사용자를 찾을 수 없습니다")
     return user

@@ -7,32 +7,32 @@ from zoneinfo import ZoneInfo
 
 SEOUL = ZoneInfo("Asia/Seoul")
 
-# hour → short check-ins. {name} becomes "박준석님".
+# Natural Kakao 해요체 — short, time-aware, no translationese / clingy "missed you" tone.
 _BY_HOUR: dict[int, tuple[str, ...]] = {
-    0: ("아직 안 주무셨어요, {name}님?", "고요한 밤이에요, {name}님."),
-    1: ("늦은 밤이에요, {name}님.", "편히 쉬어요, {name}님."),
-    2: ("깊은 밤이에요, {name}님.", "무리하지 말아요, {name}님."),
-    3: ("새벽이네요, {name}님.", "해가 뜨기 전이에요, {name}님."),
-    4: ("이른 새벽이에요, {name}님.", "조용한 시간이에요, {name}님."),
-    5: ("좋은 새벽이에요, {name}님.", "하루가 시작됐어요, {name}님."),
-    6: ("좋은 아침이에요, {name}님.", "상쾌한 아침이에요, {name}님."),
-    7: ("출근길은 괜찮아요, {name}님?", "아침 잘 열고 있어요, {name}님?"),
-    8: ("커피는 마셨어요, {name}님?", "오전 잘 보내고 있어요, {name}님?"),
-    9: ("좋은 오전이에요, {name}님.", "오전 파이팅이에요, {name}님."),
-    10: ("집중 잘 되고 있어요, {name}님?", "오전 중반이에요, {name}님."),
-    11: ("점심이 가까워져요, {name}님.", "오전 마무리 잘해요, {name}님."),
-    12: ("점심은 먹었어요, {name}님?", "맛있는 점심 먹어요, {name}님."),
-    13: ("식후예요, {name}님.", "점심 잘 먹었어요, {name}님?"),
-    14: ("나른한 오후예요, {name}님.", "오후도 화이팅이에요, {name}님."),
-    15: ("오후 잘 가고 있어요, {name}님?", "잠깐 숨 골랐어요, {name}님?"),
-    16: ("오후가 깊어져요, {name}님.", "오늘 하루 어땠어요, {name}님?"),
-    17: ("퇴근 시간이에요, {name}님.", "저녁이 다가와요, {name}님."),
-    18: ("좋은 저녁이에요, {name}님.", "오늘 수고했어요, {name}님."),
-    19: ("저녁은 먹었어요, {name}님?", "저녁 시간이에요, {name}님."),
-    20: ("편안한 밤 보내요, {name}님.", "저녁 잘 보내고 있어요, {name}님?"),
-    21: ("좋은 밤이에요, {name}님.", "오늘은 이만 쉬어요, {name}님."),
-    22: ("밤 공기가 좋아요, {name}님.", "내일도 응원해요, {name}님."),
-    23: ("오늘도 고생했어요, {name}님.", "이제 잘 시간이에요, {name}님."),
+    0: ("{name}님, 아직 안 주무시네요.", "{name}님, 밤이 깊었어요."),
+    1: ("{name}님, 늦은 밤이에요.", "{name}님, 편히 쉬세요."),
+    2: ("{name}님, 깊은 밤이네요.", "{name}님, 무리하지 마세요."),
+    3: ("{name}님, 새벽이에요.", "{name}님, 해가 뜨기 전이네요."),
+    4: ("{name}님, 이른 새벽이에요.", "{name}님, 조용한 시간이네요."),
+    5: ("{name}님, 좋은 아침이에요.", "{name}님 안녕하세요. 이른 아침이에요."),
+    6: ("{name}님, 좋은 아침이에요.", "{name}님 안녕하세요."),
+    7: ("{name}님, 좋은 아침이에요.", "{name}님, 출근길 조심하세요."),
+    8: ("{name}님, 좋은 아침이에요.", "{name}님 안녕하세요."),
+    9: ("{name}님 안녕하세요.", "{name}님, 오전에도 화이팅이에요."),
+    10: ("{name}님 안녕하세요.", "{name}님, 오전 잘 보내고 계세요?"),
+    11: ("{name}님 안녕하세요.", "{name}님, 곧 점심이겠어요."),
+    12: ("{name}님, 점심 맛있게 드세요.", "{name}님, 점심은 드셨어요?"),
+    13: ("{name}님, 점심은 드셨어요?", "{name}님 안녕하세요."),
+    14: ("{name}님 안녕하세요.", "{name}님, 오후도 잘 보내고 계세요?"),
+    15: ("{name}님 안녕하세요.", "{name}님, 잠깐 쉬고 계세요?"),
+    16: ("{name}님 안녕하세요.", "{name}님, 오늘 하루 어땠어요?"),
+    17: ("{name}님, 퇴근하실 시간이네요.", "{name}님, 오늘도 수고하셨어요."),
+    18: ("{name}님, 좋은 저녁이에요.", "{name}님, 오늘도 수고하셨어요."),
+    19: ("{name}님, 저녁은 드셨어요?", "{name}님, 좋은 저녁이에요."),
+    20: ("{name}님, 편안한 저녁 되세요.", "{name}님 안녕하세요."),
+    21: ("{name}님, 좋은 밤 되세요.", "{name}님, 오늘 하루도 고생하셨어요."),
+    22: ("{name}님, 좋은 밤 되세요.", "{name}님, 내일도 응원할게요."),
+    23: ("{name}님, 오늘도 고생하셨어요.", "{name}님, 이제 푹 쉬세요."),
 }
 
 
@@ -45,16 +45,14 @@ def greeting_line(name: str, *, now: datetime) -> str:
     return options[pick].format(name=label)
 
 
+# Assistant self-intro — like a brief Kakao ping, not a reunion.
 _INTRO_PATTERNS: tuple[str, ...] = (
-    "{assistant}요.",
-    "저 {assistant}요.",
-    "{assistant} 왔어요.",
-    "또 왔네요, {assistant}요.",
-    "{assistant}요, 잘 지내요?",
-    "오랜만이에요. {assistant} 왔어요.",
-    "저예요. {assistant} 왔어요.",
-    "{assistant}요. 소식 가져왔어요.",
-    "보고 싶었어요. {assistant} 왔어요.",
+    "{assistant}이에요.",
+    "저 {assistant}이에요.",
+    "안녕하세요, {assistant}이에요.",
+    "{assistant}이에요. 오늘 소식 정리했어요.",
+    "{assistant}이 소식 들고 왔어요.",
+    "저예요. {assistant}이에요.",
 )
 
 
@@ -66,7 +64,7 @@ def assistant_intro_line(assistant_name: str, *, now: datetime) -> str:
 
 
 def digest_opening_line(user_name: str, assistant_name: str, *, now: datetime) -> str:
-    """Friendly 요-form hello from the assistant plus a time-of-day check-in."""
+    """Korean Kakao-style hello: assistant intro + time-of-day check-in."""
     intro = assistant_intro_line(assistant_name, now=now)
     user_line = greeting_line(user_name, now=now)
     return f"{intro} {user_line}"

@@ -12,10 +12,12 @@ def _at(hour: int, minute: int = 0) -> datetime:
 
 def test_evening_six_is_a_simple_hello():
     line = greeting_line("박준석", now=_at(18))
-    assert line.endswith("박준석님.") or line.endswith("박준석님?")
+    assert "박준석님" in line
     assert "하루만장" not in line
     assert "입니다" not in line
     assert "요" in line
+    assert "보고 싶" not in line
+    assert "오랜만" not in line
 
 
 def test_nineteen_mentions_dinner():
@@ -29,9 +31,11 @@ def test_every_hour_has_a_short_line_with_name():
     for hour in range(24):
         line = greeting_line("민수", now=_at(hour))
         assert "민수님" in line
-        assert 8 <= len(line) <= 40
+        assert 8 <= len(line) <= 48
         assert "하루만장" not in line
         assert "입니다" not in line
+        assert "보고 싶" not in line
+        assert "오랜만" not in line
 
 
 def test_digest_opening_includes_assistant_intro_and_user_hello():
@@ -40,7 +44,7 @@ def test_digest_opening_includes_assistant_intro_and_user_hello():
     assert "박준석님" in line
     assert "브리프" not in line
     assert "입니다" not in line
-    assert line.endswith("박준석님.") or line.endswith("박준석님?")
+    assert "보고 싶" not in line
 
 
 def test_digest_opening_varies_intro_pattern():
@@ -49,11 +53,14 @@ def test_digest_opening_varies_intro_pattern():
     assert all("서연" in line for line in lines)
     assert all("브리프" not in line for line in lines)
     assert all("입니다" not in line for line in lines)
-    assert any("서연요" in line or "서연 왔어요" in line for line in lines)
+    assert all("보고 싶" not in line for line in lines)
+    assert all("오랜만" not in line for line in lines)
+    assert any("서연이에요" in line or "서연이 소식" in line for line in lines)
 
 
 def test_assistant_intro_uses_yo_form():
     intro = assistant_intro_line("하람", now=_at(8))
     assert "하람" in intro
     assert "입니다" not in intro
+    assert "하람요" not in intro
     assert intro.endswith("요.") or intro.endswith("요?") or intro.endswith("요")

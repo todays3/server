@@ -8,6 +8,7 @@ Docs:
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
@@ -26,6 +27,8 @@ TOKEN_URL = "https://kauth.kakao.com/oauth/token"
 ME_URL = "https://kapi.kakao.com/v2/user/me"
 SCOPES_URL = "https://kapi.kakao.com/v2/user/scopes"
 MEMO_URL = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
+# Joins per-assistant Kakao texts in stored digest.body. Never sent as visible text.
+ASSISTANT_MEMO_BREAK = "\n\n\x1e\n\n"
 
 # Optional extra scopes for 나에게 보내기 after login. Login itself omits scope
 # so Kakao only asks for items already enabled in the developer console.
@@ -35,6 +38,20 @@ MEMO_SCOPES = "talk_message"
 MEMO_TEXT_LIMIT = 1000
 # Refresh before send if access token is missing expiry or expires within this window.
 ACCESS_REFRESH_SKEW = timedelta(minutes=10)
+# Status checks used to wait up to 10s on kapi; keep boot snappy.
+SCOPES_HTTP_TIMEOUT = 2.0
+SCOPES_CACHE_TTL_SECONDS = 300.0
+
+# access_token → (monotonic_ts, agreed)
+_talk_message_cache: dict[str, tuple[float, bool]] = {}
+
+
+def clear_talk_message_cache(access_token: str | None = None) -> None:
+    """Drop cached scope checks (all, or one token after disconnect/refresh)."""
+    if access_token is None:
+        _talk_message_cache.clear()
+        return
+    _talk_message_cache.pop(access_token, None)
 
 
 def build_authorize_url(state: str, *, prompt: str | None = None, scopes: str | None = None) -> str:
@@ -111,19 +128,41 @@ def talk_message_from_scopes(payload: dict) -> bool:
     return False
 
 
-async def fetch_talk_message_agreed(access_token: str) -> bool:
+async def fetch_talk_message_agreed(
+    access_token: str,
+    *,
+    timeout: float = SCOPES_HTTP_TIMEOUT,
+    use_cache: bool = True,
+) -> bool:
+    """Check talk_message scope. Cached — /kakao/status must not wait on kapi every boot."""
     if not access_token:
         return False
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(
-            SCOPES_URL,
-            headers={"Authorization": f"Bearer {access_token}"},
-            params={"scopes": MEMO_SCOPES},
-        )
-        payload = resp.json() if resp.content else {}
-        if resp.status_code >= 400:
-            return False
-        return talk_message_from_scopes(payload if isinstance(payload, dict) else {})
+    now = time.monotonic()
+    if use_cache:
+        cached = _talk_message_cache.get(access_token)
+        if cached is not None and now - cached[0] <= SCOPES_CACHE_TTL_SECONDS:
+            return cached[1]
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(
+                SCOPES_URL,
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={"scopes": MEMO_SCOPES},
+            )
+            payload = resp.json() if resp.content else {}
+            if resp.status_code >= 400:
+                agreed = False
+            else:
+                agreed = talk_message_from_scopes(payload if isinstance(payload, dict) else {})
+    except (httpx.TimeoutException, httpx.TransportError, OSError):
+        # Prefer last known answer over failing the whole desk boot.
+        if use_cache:
+            cached = _talk_message_cache.get(access_token)
+            if cached is not None:
+                return cached[1]
+        return False
+    _talk_message_cache[access_token] = (now, agreed)
+    return agreed
 
 
 def parse_profile(profile: dict) -> tuple[str, str, str | None]:
@@ -151,6 +190,8 @@ def apply_token_payload(
     stamp = now or datetime.now(timezone.utc)
     access = str(payload.get("access_token") or "")
     if access:
+        if account.access_token and account.access_token != access:
+            clear_talk_message_cache(account.access_token)
         account.access_token = access
         expires_in = payload.get("expires_in")
         if expires_in is not None:
@@ -286,8 +327,13 @@ def resolve_or_create_oauth_user(
     return user, True
 
 
-def split_memo_chunks(title: str, body: str, *, limit: int = MEMO_TEXT_LIMIT) -> list[str]:
-    """Split title+body into Kakao text chunks under `limit` characters."""
+def memo_sections(body: str) -> list[str]:
+    """Split stored digest.body into one Kakao memo per hired assistant."""
+    return [part.strip() for part in (body or "").split("\x1e") if part.strip()]
+
+
+def _split_length_chunks(title: str, body: str, *, limit: int) -> list[str]:
+    """Split one assistant memo into Kakao text chunks under `limit` characters."""
     full = f"{title}\n\n{body}".strip()
     if len(full) <= limit:
         return [full]
@@ -341,6 +387,17 @@ def split_memo_chunks(title: str, body: str, *, limit: int = MEMO_TEXT_LIMIT) ->
             labeled = labeled[:limit]
         annotated.append(labeled)
     return annotated
+
+
+def split_memo_chunks(title: str, body: str, *, limit: int = MEMO_TEXT_LIMIT) -> list[str]:
+    """One Kakao memo per assistant, then length-split each memo if needed."""
+    sections = memo_sections(body)
+    if len(sections) <= 1:
+        return _split_length_chunks(title, sections[0] if sections else (body or ""), limit=limit)
+    chunks: list[str] = []
+    for section in sections:
+        chunks.extend(_split_length_chunks(title, section, limit=limit))
+    return chunks
 
 
 async def _post_memo(access_token: str, text: str) -> dict:

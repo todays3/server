@@ -83,17 +83,70 @@ def test_talk_message_from_scopes_reads_agreed_flag():
 
 @pytest.mark.asyncio
 async def test_fetch_talk_message_agreed_reads_kakao_scopes(monkeypatch):
+    from app.services import kakao as kakao_mod
+
+    kakao_mod.clear_talk_message_cache()
     monkeypatch.setattr(
         "app.services.kakao.httpx.AsyncClient",
         lambda **_k: _AsyncClient(_Resp(200, {"scopes": [{"id": "talk_message", "agreed": True}]})),
     )
     assert await fetch_talk_message_agreed("tok") is True
+    kakao_mod.clear_talk_message_cache()
     monkeypatch.setattr(
         "app.services.kakao.httpx.AsyncClient",
         lambda **_k: _AsyncClient(_Resp(403, {"msg": "denied"})),
     )
     assert await fetch_talk_message_agreed("tok") is False
     assert await fetch_talk_message_agreed("") is False
+
+
+@pytest.mark.asyncio
+async def test_fetch_talk_message_agreed_caches_successful_scope_check(monkeypatch):
+    from app.services import kakao as kakao_mod
+
+    calls = {"n": 0}
+    kakao_mod.clear_talk_message_cache()
+
+    class CountingClient(_AsyncClient):
+        def __init__(self, *_a, **_k):
+            super().__init__(_Resp(200, {"scopes": [{"id": "talk_message", "agreed": True}]}))
+
+        async def get(self, *_a, **_k):
+            calls["n"] += 1
+            return self._resp
+
+    monkeypatch.setattr("app.services.kakao.httpx.AsyncClient", CountingClient)
+    assert await fetch_talk_message_agreed("cache-tok") is True
+    assert await fetch_talk_message_agreed("cache-tok") is True
+    assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_talk_message_agreed_uses_stale_cache_on_timeout(monkeypatch):
+    from app.services import kakao as kakao_mod
+    import httpx
+    import time
+
+    kakao_mod.clear_talk_message_cache()
+    kakao_mod._talk_message_cache["stale-tok"] = (time.monotonic() - 10_000, True)
+
+    class BoomClient:
+        def __init__(self, *_a, **_k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return None
+
+        async def get(self, *_a, **_k):
+            raise httpx.TimeoutException("slow")
+
+    monkeypatch.setattr("app.services.kakao.httpx.AsyncClient", BoomClient)
+    assert await fetch_talk_message_agreed("stale-tok") is True
+    kakao_mod.clear_talk_message_cache()
+    assert await fetch_talk_message_agreed("stale-tok") is False
 
 
 @pytest.mark.asyncio

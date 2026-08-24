@@ -53,6 +53,7 @@ def disconnect_kakao(
     db: Annotated[Session, Depends(get_db)],
 ) -> KakaoDisconnectOut:
     if user.kakao:
+        kakao_service.clear_talk_message_cache(user.kakao.access_token)
         db.delete(user.kakao)
         db.commit()
     return KakaoDisconnectOut(connected=False)
