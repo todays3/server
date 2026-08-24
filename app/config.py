@@ -14,6 +14,17 @@ def env_mode() -> str:
     return "development"
 
 
+def _is_ollama_model_tag(name: str) -> bool:
+    """Ollama uses name:tag. Groq/OpenAI use org/model without a colon tag."""
+    trimmed = (name or "").strip()
+    if not trimmed:
+        return False
+    lowered = trimmed.lower()
+    if lowered.startswith("qwen"):
+        return True
+    return ":" in trimmed and "/" not in trimmed.split(":", 1)[0]
+
+
 def env_file_paths() -> tuple[str, ...]:
     """Load only `.env.development` or `.env.production`. Plain `.env` is unused."""
     path = _SERVER_ROOT / f".env.{env_mode()}"
@@ -48,10 +59,34 @@ class Settings(BaseSettings):
 
     # Free-tier friendly default: Groq OpenAI-compatible API
     # Get a key at https://console.groq.com (free) then set LLM_API_KEY
-    llm_provider: str = "groq"  # groq | openai | custom
+    llm_provider: str = "groq"  # groq | openai | custom | ollama | hybrid
     llm_api_key: str = ""
     llm_base_url: str = ""
     llm_model: str = ""
+    # Groq Free openai/gpt-oss-120b: 30 RPM, 8K TPM. 0 disables that dimension.
+    llm_tpm_limit: int = 8000
+    llm_rpm_limit: int = 30
+    llm_max_concurrent: int = 1
+    llm_rate_headroom: float = 0.85
+    llm_max_retries: int = 3
+    llm_retry_cap_seconds: float = 90.0
+    # gpt-oss spends completion tokens on hidden reasoning; low keeps JSON in content.
+    llm_reasoning_effort: str = "low"
+    # Local Qwen2.5-1.5B (Ollama). hybrid = local then Groq fallback.
+    llm_local_enabled: bool = False
+    llm_local_base_url: str = "http://127.0.0.1:11434/v1"
+    llm_local_model: str = "qwen2.5:1.5b"
+    llm_local_api_key: str = "ollama"
+    llm_local_num_ctx: int = 4096
+    llm_local_max_concurrent: int = 1
+    llm_local_num_thread: int = 2
+    llm_local_mlock: bool = True
+    llm_local_timeout_seconds: float = 25.0
+    llm_local_connect_timeout_seconds: float = 2.0
+    llm_local_unhealthy_skip_seconds: float = 60.0
+    # Digest curate/critique: prefer Groq. Local Qwen often spends 1–5 min then returns
+    # broken JSON, so hybrid-local-first makes E2E/schedule look hung.
+    llm_digest_prefer_remote: bool = True
 
     # Auth endpoint rate limit (per IP + path)
     rate_limit_auth_max: int = 30
@@ -84,6 +119,30 @@ class Settings(BaseSettings):
     flash_webhook_secret: str = ""
     flash_alert_user_email: str = ""
 
+    # Agentic enrichment (Scrape → enrich → Kakao). Off in tests via conftest.
+    agent_enrichment_enabled: bool = True
+    # Critique → re-curate once. None = auto (off for ollama/hybrid).
+    digest_critique_enabled: bool | None = None
+    agent_faiss_enabled: bool = False
+    agent_embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2"
+    finance_db_path: str = ""
+    notion_api_key: str = ""
+    notion_database_id: str = ""
+    kakao_webhook_secret: str = ""
+
+    # DART XBRL + PDF FTS5 (separate dart_financials.db). Ingest/OCR off by default.
+    dart_api_key: str = ""
+    dart_db_path: str = ""
+    dart_ingest_enabled: bool = False
+    dart_ocr_enabled: bool = False
+    dart_tickers: str = "005930,000660"
+
+    # Scheduled digest: prepare early, send at/after slot (never before slot).
+    schedule_prep_lead_minutes: int = 30
+    schedule_send_grace_minutes: int = 60
+    # Keep trying unsent drafts this long after the slot (must be >= grace).
+    schedule_send_catchup_minutes: int = 180
+
     @property
     def allowed_cors_origins(self) -> list[str]:
         extras = [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
@@ -94,8 +153,39 @@ class Settings(BaseSettings):
         return bool(self.kakao_rest_api_key)
 
     @property
-    def llm_configured(self) -> bool:
+    def llm_local_ready(self) -> bool:
+        provider = (self.llm_provider or "").strip().lower()
+        if provider == "ollama":
+            return True
+        if provider == "hybrid":
+            return True
+        return bool(self.llm_local_enabled)
+
+    @property
+    def remote_llm_ready(self) -> bool:
+        provider = (self.llm_provider or "").strip().lower()
+        if provider == "ollama":
+            return False
         return bool(self.llm_api_key)
+
+    @property
+    def llm_configured(self) -> bool:
+        return self.llm_local_ready or self.remote_llm_ready
+
+    @property
+    def resolved_llm_local_base_url(self) -> str:
+        return (self.llm_local_base_url or "http://127.0.0.1:11434/v1").rstrip("/")
+
+    @property
+    def resolved_llm_local_model(self) -> str:
+        return (self.llm_local_model or "qwen2.5:1.5b").strip()
+
+    @property
+    def resolved_remote_provider(self) -> str:
+        provider = (self.llm_provider or "groq").strip().lower()
+        if provider in {"openai", "custom"}:
+            return provider
+        return "groq"
 
     @property
     def resolved_llm_base_url(self) -> str:
@@ -109,12 +199,17 @@ class Settings(BaseSettings):
 
     @property
     def resolved_llm_model(self) -> str:
-        if self.llm_model:
-            return self.llm_model
-        if self.llm_provider == "openai":
+        name = (self.llm_model or "").strip()
+        provider = (self.llm_provider or "").strip().lower()
+        # Qwen/Ollama tags are local-only. Groq (and hybrid fallback) never receive them.
+        if name:
+            if _is_ollama_model_tag(name) and provider in {"", "groq", "hybrid"}:
+                return "openai/gpt-oss-120b"
+            return name
+        if provider == "openai":
             return "gpt-4o-mini"
-        # Groq free-tier default
-        return "llama-3.3-70b-versatile"
+        # Groq retired llama-3.3-70b-versatile on 2026-08-16.
+        return "openai/gpt-oss-120b"
 
     @property
     def youtube_configured(self) -> bool:
@@ -149,6 +244,14 @@ class Settings(BaseSettings):
     @property
     def flash_webhook_configured(self) -> bool:
         return bool(self.flash_webhook_secret)
+
+    @property
+    def kakao_webhook_configured(self) -> bool:
+        return bool(self.kakao_webhook_secret)
+
+    @property
+    def notion_configured(self) -> bool:
+        return bool(self.notion_api_key and self.notion_database_id)
 
     @property
     def flash_alert_target_email(self) -> str:

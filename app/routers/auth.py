@@ -241,27 +241,33 @@ async def kakao_oauth_callback(
         other = kakao_service.find_user_by_kakao_id(db, kakao_id)
         if other is not None and other.id != user.id:
             return _front_redirect(path="/app", error="kakao_already_linked")
-        kakao_service.upsert_kakao_account(
+        try:
+            kakao_service.upsert_kakao_account(
+                db,
+                user,
+                kakao_id=kakao_id,
+                access_token=access,
+                refresh_token=refresh,
+                expires_in=expires_in,
+                refresh_token_expires_in=refresh_expires_in,
+            )
+        except Exception:  # noqa: BLE001
+            return _front_redirect(path="/error", code="500")
+        return _front_redirect(path="/app", kakao="connected")
+
+    try:
+        user, _created = kakao_service.resolve_or_create_oauth_user(
             db,
-            user,
             kakao_id=kakao_id,
+            display_name=nickname,
+            email=email,
             access_token=access,
             refresh_token=refresh,
             expires_in=expires_in,
             refresh_token_expires_in=refresh_expires_in,
         )
-        return _front_redirect(path="/app", kakao="connected")
-
-    user, _created = kakao_service.resolve_or_create_oauth_user(
-        db,
-        kakao_id=kakao_id,
-        display_name=nickname,
-        email=email,
-        access_token=access,
-        refresh_token=refresh,
-        expires_in=expires_in,
-        refresh_token_expires_in=refresh_expires_in,
-    )
+    except Exception:  # noqa: BLE001
+        return _front_redirect(path="/error", code="500")
 
     if user.status == "rejected":
         return _front_redirect(error="rejected")

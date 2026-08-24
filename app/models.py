@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -86,6 +86,7 @@ class Digest(Base):
     next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     chunks_sent: Mapped[int] = mapped_column(Integer, default=0)
     miss_notified: Mapped[bool] = mapped_column(Boolean, default=False)
+    delivery_trace_json: Mapped[str] = mapped_column(Text, default="[]")
     # JSON array of curated items for structured clients
     items_json: Mapped[str] = mapped_column(Text, default="[]")
 
@@ -189,6 +190,14 @@ class LlmUsage(Base):
     total_tokens: Mapped[int] = mapped_column(Integer, default=0)
     success: Mapped[bool] = mapped_column(Boolean, default=True)
     error_message: Mapped[str] = mapped_column(Text, default="")
+    ttft_ms: Mapped[int] = mapped_column(Integer, default=0)
+    total_ms: Mapped[int] = mapped_column(Integer, default=0)
+    tps: Mapped[float] = mapped_column(Float, default=0.0)
+    streamed: Mapped[bool] = mapped_column(Boolean, default=False)
+    faithfulness: Mapped[float | None] = mapped_column(Float, nullable=True)
+    hallucination_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    answer_relevance: Mapped[float | None] = mapped_column(Float, nullable=True)
+    context_precision: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
     user: Mapped[User] = relationship()

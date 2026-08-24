@@ -104,6 +104,7 @@ class RoleSettingsOut(BaseModel):
     job_seeker_level: Literal["intern", "new", "experienced"] = "new"
     investor_market: Literal["국내증시", "미국증시"] = "국내증시"
     investor_themes: list[str] = Field(default_factory=list)
+    investor_match_stock: bool = True
     music_genres: list[str] = Field(default_factory=list)
     book_genres: list[str] = Field(default_factory=list)
     movie_genres: list[str] = Field(default_factory=list)
@@ -120,6 +121,7 @@ class RoleSettingsOut(BaseModel):
     def assistant_names_clean(cls, value: dict[str, str]) -> dict[str, str]:
         allowed = {
             "investor",
+            "stock_analyst",
             "developer",
             "doctor",
             "semiconductor",
@@ -173,6 +175,7 @@ class PreferenceUpdate(BaseModel):
             return value
         allowed = {
             "investor",
+            "stock_analyst",
             "developer",
             "doctor",
             "semiconductor",
@@ -242,6 +245,7 @@ class DigestItemOut(BaseModel):
     insight_q: str = ""
     insight_url: str = ""
     why: str = ""
+    angle: str = ""
 
 
 class DigestOut(BaseModel):
@@ -268,6 +272,7 @@ class PreviewRequest(BaseModel):
 
 class AdminDigestPreviewRequest(BaseModel):
     user_id: int
+    send_kakao: bool = False
 
 
 class AdminKakaoTestSendRequest(BaseModel):
@@ -294,6 +299,20 @@ class AdminKakaoTestSendOut(BaseModel):
     push_error: str = ""
 
 
+class AdminLlmTestOut(BaseModel):
+    ok: bool
+    configured: bool
+    provider: str = ""
+    used_provider: str = ""
+    model: str = ""
+    ms: int = 0
+    preview: str = ""
+    error_message: str = ""
+    local_ready: bool = False
+    remote_ready: bool = False
+    fallback: bool = False
+
+
 class DigestCandidateOut(BaseModel):
     kind: str
     title: str
@@ -318,6 +337,16 @@ class AdminDigestPreviewOut(BaseModel):
     items: list[DigestItemOut] = Field(default_factory=list)
     candidates: list[DigestCandidateOut] = Field(default_factory=list)
     sent_to_kakao: bool = False
+    delivery_status: str = ""
+    delivery_error: str = ""
+    digest_id: int | None = None
+    trigger_ms: int = 0
+    crawl_ms: int = 0
+    aggregation_ms: int = 0
+    llm_ms: int = 0
+    format_ms: int = 0
+    send_ms: int = 0
+    kakao_connected: bool = False
 
 
 class KakaoStatusOut(BaseModel):
@@ -400,6 +429,43 @@ class AdminUsageEvent(BaseModel):
     created_at: datetime
     delivery_status: str = ""
     attempt_count: int = 0
+    digest_id: int | None = None
+
+
+class AdminDeliveryTraceStep(BaseModel):
+    at: str
+    step: str
+    ok: bool
+    error: str = ""
+    chunks_sent: int = 0
+    chunk_total: int = 0
+    attempt: int = 0
+    note: str = ""
+
+
+class AdminPipelineStep(BaseModel):
+    phase: str
+    label: str
+    ok: bool | None = None
+    detail: str = ""
+    ms: int | None = None
+
+
+class AdminRecentCallDetail(BaseModel):
+    usage: AdminUsageEvent
+    llm_error: str = ""
+    delivery_error: str = ""
+    digest_id: int | None = None
+    digest_status: str = ""
+    chunks_sent: int = 0
+    chunk_total: int = 0
+    next_retry_at: datetime | None = None
+    sent_at: datetime | None = None
+    delivery_trace: list[AdminDeliveryTraceStep] = Field(default_factory=list)
+    pipeline: list[AdminPipelineStep] = Field(default_factory=list)
+    crawl_run_id: int | None = None
+    digest_title: str = ""
+    digest_body_preview: str = ""
 
 
 class AdminRecentCallList(BaseModel):
@@ -419,12 +485,16 @@ class AdminPrefDetail(BaseModel):
     timezone: str
     enabled: bool
     insight_questions: bool = False
+    roles: list[str] = Field(default_factory=list)
+    role_settings: RoleSettingsOut = Field(default_factory=RoleSettingsOut)
 
 
 class AdminUserDetail(BaseModel):
     id: int
     email: EmailStr
     display_name: str
+    occupation: str = ""
+    birth_date: date | None = None
     status: str
     is_admin: bool
     kakao_connected: bool
@@ -472,6 +542,45 @@ class AdminOverview(BaseModel):
     runs_cpu_peak_max_percent: int = 0
     runs_rss_peak_max_bytes: int = 0
     send_schedule: AdminSendScheduleStats = Field(default_factory=AdminSendScheduleStats)
+
+
+class AdminLiveActivityItem(BaseModel):
+    id: str
+    kind: str
+    kind_label: str = ""
+    phase: str
+    phase_label: str = ""
+    label: str
+    detail: str = ""
+    user_id: int | None = None
+    display_name: str = ""
+    slot_label: str = ""
+    cluster_key: str = ""
+    started_at: float = 0
+    elapsed_ms: int = 0
+
+
+class AdminLiveActivityOut(BaseModel):
+    active_count: int = 0
+    user_count: int = 0
+    by_kind: dict[str, int] = Field(default_factory=dict)
+    by_phase: dict[str, int] = Field(default_factory=dict)
+    items: list[AdminLiveActivityItem] = Field(default_factory=list)
+    summary: str = "지금 돌아가는 처리 없음"
+    server_time: float = 0
+
+
+class AdminPipelineFlagsOut(BaseModel):
+    agent_enrichment: bool
+    digest_critique: bool
+    agent_enrichment_source: str = "env"
+    digest_critique_source: str = "auto"
+    notes: dict[str, str] = Field(default_factory=dict)
+
+
+class AdminPipelineFlagsUpdate(BaseModel):
+    agent_enrichment: bool | None = None
+    digest_critique: bool | None = None
 
 
 class SourceFeedProbeOut(BaseModel):
@@ -625,11 +734,77 @@ class AdminUpdateOut(BaseModel):
 
 class LatencyListOut(BaseModel):
     lead_minutes: int
-    lead_seconds: int = 40
+    lead_seconds: int = 1800
     sample_size: int
     layers: list[LatencyLayerOut]
     runs: list[LatencyRunOut]
     cpu_peak_max_percent: int = 0
     rss_peak_max_bytes: int = 0
+
+
+class QualityStatOut(BaseModel):
+    p50: float = 0
+    p90: float = 0
+    p95: float = 0
+    mean: float = 0
+
+
+class LlmQualityRunOut(BaseModel):
+    id: int
+    created_at: datetime | None = None
+    purpose: str
+    provider: str
+    model: str
+    success: bool
+    ttft_ms: int = 0
+    total_ms: int = 0
+    tps: float = 0
+    streamed: bool = False
+    faithfulness: float | None = None
+    hallucination_rate: float | None = None
+    answer_relevance: float | None = None
+    context_precision: float | None = None
+
+
+class LlmQualityListOut(BaseModel):
+    sample_size: int
+    rag_sample_size: int
+    ttft: QualityStatOut
+    tps: QualityStatOut
+    hallucination_rate: QualityStatOut
+    faithfulness: QualityStatOut
+    answer_relevance: QualityStatOut
+    context_precision: QualityStatOut
+    runs: list[LlmQualityRunOut]
+
+
+class FinanceQueryIn(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    ticker: str = Field(min_length=1, max_length=40)
+    question: str = Field(min_length=1, max_length=500)
+    year: int | None = Field(default=None, ge=1990, le=2100)
+
+
+class FinanceFactOut(BaseModel):
+    ticker: str
+    year: int
+    quarter: int = 0
+    account: str
+    account_name: str
+    value: int
+
+
+class FinanceSourceOut(BaseModel):
+    doc_id: str
+    page: int
+
+
+class FinanceQueryOut(BaseModel):
+    ok: bool
+    route: Literal["NUMBER", "CALCULATION", "ANALYSIS"]
+    answer: str
+    facts: list[FinanceFactOut] = Field(default_factory=list)
+    sources: list[FinanceSourceOut] = Field(default_factory=list)
 
 

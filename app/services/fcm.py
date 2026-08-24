@@ -22,7 +22,7 @@ UPDATE_PUSH_TITLE = "하루만장"
 UPDATE_PUSH_BODY = "업데이트 소식이 있습니다"
 UPDATE_PUSH_URL = "/app/notes"
 DIGEST_PUSH_URL = "kakaotalk://"
-OPEN_KAKAO_PATH = "/open-kakao"
+OPEN_KAKAO_PATH = "/open-kakao.html"
 UPDATE_NOTE_KIND = "update"
 SUGGESTION_NOTE_KIND = "suggestion"
 UPDATE_NOTE_NICKNAME = "하루만장"
@@ -112,25 +112,41 @@ def firebase_messaging_sw_source() -> str:
         f"const APP_ORIGIN = {json.dumps(get_settings().frontend_origin.rstrip('/'))};\n"
         "function clickTarget(url) {\n"
         "  if (!url) return APP_ORIGIN + '/app';\n"
-        "  if (url.indexOf('kakaotalk:') === 0 || url.indexOf('intent:') === 0) return url;\n"
+        "  if (url.indexOf('kakaotalk:') === 0 || url.indexOf('intent:') === 0) {\n"
+        f"    return APP_ORIGIN + {json.dumps(OPEN_KAKAO_PATH)};\n"
+        "  }\n"
         "  if (url.indexOf('http://') === 0 || url.indexOf('https://') === 0) return url;\n"
         "  return APP_ORIGIN + (url.charAt(0) === '/' ? url : '/' + url);\n"
         "}\n"
+        "function notificationUrl(data) {\n"
+        "  if (!data) return '/app';\n"
+        "  if (data.url) return data.url;\n"
+        "  var nested = data.FCM_MSG && data.FCM_MSG.data;\n"
+        "  if (nested && nested.url) return nested.url;\n"
+        "  return '/app';\n"
+        "}\n"
         "self.addEventListener('notificationclick', (event) => {\n"
         "  event.notification.close();\n"
-        "  const url = (event.notification.data && event.notification.data.url) || '/app';\n"
+        "  const url = notificationUrl(event.notification.data);\n"
+        "  const target = clickTarget(url);\n"
         "  event.waitUntil((async () => {\n"
-        "    const target = clickTarget(url);\n"
-        "    try {\n"
-        "      const opened = await clients.openWindow(target);\n"
-        "      if (opened) return opened;\n"
-        "    } catch (err) {}\n"
-        "    if (target.indexOf('kakaotalk:') === 0 || target.indexOf('intent:') === 0) {\n"
-        "      return clients.openWindow(APP_ORIGIN + '/open-kakao');\n"
+        "    const list = await clients.matchAll({ type: 'window', includeUncontrolled: true });\n"
+        "    for (const client of list) {\n"
+        "      try { client.postMessage({ type: 'todays3-open-kakao', url: target }); } catch (e) {}\n"
         "    }\n"
+        "    if (list.length) {\n"
+        "      const client = list[0];\n"
+        "      if ('focus' in client) await client.focus();\n"
+        "      if ('navigate' in client) {\n"
+        "        try { await client.navigate(target); } catch (e) {}\n"
+        "      }\n"
+        "      return;\n"
+        "    }\n"
+        "    if (clients.openWindow) await clients.openWindow(target);\n"
         "  })());\n"
         "});\n"
         "self.addEventListener('install', () => self.skipWaiting());\n"
+        "self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));\n"
     )
 
 
@@ -220,18 +236,9 @@ def notify_digest_missed(
     *,
     send_one: SendOne | None = None,
 ) -> int:
-    title = "하루만장 발송 실패"
-    body = f"{slot_label} 예약 발송을 완료하지 못했습니다. 앱에서 다시 보내기를 눌러 주세요."
-    devices = db.scalars(select(PushDevice).where(PushDevice.user_id == user_id)).all()
-    return _notify_devices(
-        db,
-        devices,
-        title,
-        body,
-        url="/app",
-        tag="todays3-digest-missed",
-        send_one=send_one,
-    )
+    """Scheduled-send failure used to prompt in-app resend. Push is disabled."""
+    _ = (db, user_id, slot_label, send_one)
+    return 0
 
 
 def notify_digest_sent(

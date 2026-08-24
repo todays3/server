@@ -52,21 +52,12 @@ def _ensure_pref(db: Session, user: User) -> Preference:
     return user.preference
 
 
-@router.get("", response_model=PreferenceOut)
-def get_prefs(
-    user: Annotated[User, Depends(get_current_user)],
-    db: Annotated[Session, Depends(get_db)],
-) -> PreferenceOut:
-    return _pref_out(_ensure_pref(db, user))
-
-
-@router.put("", response_model=PreferenceOut)
-def update_prefs(
+def apply_preference_update(
+    pref: Preference,
     payload: PreferenceUpdate,
-    user: Annotated[User, Depends(get_current_user)],
-    db: Annotated[Session, Depends(get_db)],
-) -> PreferenceOut:
-    pref = _ensure_pref(db, user)
+    *,
+    role_limit: int | None,
+) -> None:
     data = payload.model_dump(exclude_unset=True)
     if "topics" in data and data["topics"] is not None:
         topics = [t.strip() for t in data.pop("topics") if t and t.strip()]
@@ -75,10 +66,10 @@ def update_prefs(
         pref.topics = ",".join(topics)
     if "roles" in data and data["roles"] is not None:
         roles = data.pop("roles")
-        if not user.is_admin and len(roles) > MAX_ASSISTANTS_PER_USER:
+        if role_limit is not None and len(roles) > role_limit:
             raise HTTPException(
                 status_code=400,
-                detail=f"어시스턴트는 최대 {MAX_ASSISTANTS_PER_USER}명까지 선택할 수 있습니다",
+                detail=f"어시스턴트는 최대 {role_limit}명까지 선택할 수 있습니다",
             )
         pref.roles = encode_roles(roles)
     role_settings = data.pop("role_settings", None)
@@ -107,6 +98,28 @@ def update_prefs(
     for key, value in data.items():
         setattr(pref, key, value)
     pref.timezone = "Asia/Seoul"
+
+
+@router.get("", response_model=PreferenceOut)
+def get_prefs(
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> PreferenceOut:
+    return _pref_out(_ensure_pref(db, user))
+
+
+@router.put("", response_model=PreferenceOut)
+def update_prefs(
+    payload: PreferenceUpdate,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> PreferenceOut:
+    pref = _ensure_pref(db, user)
+    apply_preference_update(
+        pref,
+        payload,
+        role_limit=None if user.is_admin else MAX_ASSISTANTS_PER_USER,
+    )
     db.commit()
     db.refresh(pref)
     return _pref_out(pref)

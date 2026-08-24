@@ -15,6 +15,7 @@ from app.schemas import DigestItemOut, DigestOut, PreviewRequest
 from app.services.delivery import deliver_digest
 from app.services.digest import create_digest, create_test_digest
 from app.routers.prefs import _ensure_pref
+from app.services.live_activity import end_activity, start_activity, update_activity
 
 router = APIRouter(prefix="/digests", tags=["digests"])
 
@@ -37,6 +38,7 @@ def _digest_out(digest: Digest) -> DigestOut:
                         insight_q=str(row.get("insight_q") or ""),
                         insight_url=str(row.get("insight_url") or ""),
                         why=str(row.get("why") or ""),
+                        angle=str(row.get("angle") or ""),
                     )
                 )
     except json.JSONDecodeError:
@@ -53,7 +55,7 @@ def _digest_out(digest: Digest) -> DigestOut:
         attempt_count=int(digest.attempt_count or 0),
         next_retry_at=digest.next_retry_at,
         chunks_sent=int(digest.chunks_sent or 0),
-        can_resend=digest.status in {"failed", "sending"},
+        can_resend=digest.status in {"failed", "sending", "partial"},
         items=raw_items,
     )
 
@@ -67,7 +69,11 @@ async def _finish_delivery(db: Session, user: User, digest: Digest) -> tuple[boo
     db.refresh(digest)
     if result.skipped:
         return False, digest.error_message or "전송 대기 중입니다"
-    return result.ok, result.error
+    if result.ok or digest.status in {"sent", "partial"}:
+        if digest.status == "partial":
+            return True, digest.error_message
+        return True, ""
+    return False, result.error or digest.error_message
 
 
 @router.get("", response_model=list[DigestOut])
@@ -106,8 +112,17 @@ async def preview_digest(
         return _digest_out(digest)
 
     progress_q: queue.Queue[dict[str, object]] = queue.Queue()
+    activity_id = start_activity(
+        kind="user_send",
+        label=f"{user.display_name or user.email} · {'지금 보내기' if payload.send else '미리보기'}",
+        phase="trigger",
+        detail="digests/preview",
+        user_id=user.id,
+        display_name=user.display_name or user.email,
+    )
 
     def on_progress(step: str) -> None:
+        update_activity(activity_id, phase=step)
         progress_q.put({"type": "step", "step": step})
 
     def work() -> Digest:
@@ -125,59 +140,70 @@ async def preview_digest(
             raise
 
     async def events():
-        loop = asyncio.get_running_loop()
-        fut = loop.run_in_executor(None, work)
-        while not fut.done():
-            try:
-                item = progress_q.get(timeout=0.25)
-                yield json.dumps(item, ensure_ascii=False) + "\n"
-            except queue.Empty:
-                yield json.dumps({"type": "ping"}) + "\n"
-        while True:
-            try:
-                item = progress_q.get_nowait()
-                yield json.dumps(item, ensure_ascii=False) + "\n"
-            except queue.Empty:
-                break
         try:
-            digest = await fut
-        except Exception:
-            return
-        if payload.send:
-            yield json.dumps({"type": "step", "step": "send"}, ensure_ascii=False) + "\n"
-            digest_id = digest.id
-            user_id = user.id
-            db.expire_all()
-            sender = db.scalar(select(User).options(joinedload(User.kakao)).where(User.id == user_id))
-            digest = db.get(Digest, digest_id)
-            if sender is None or digest is None:
-                yield json.dumps(
-                    {"type": "error", "step": "send", "message": "전송 대상을 다시 불러오지 못했습니다"},
-                    ensure_ascii=False,
-                ) + "\n"
-                return
+            loop = asyncio.get_running_loop()
+            fut = loop.run_in_executor(None, work)
+            while not fut.done():
+                try:
+                    item = progress_q.get(timeout=0.25)
+                    yield json.dumps(item, ensure_ascii=False) + "\n"
+                except queue.Empty:
+                    yield json.dumps({"type": "ping"}) + "\n"
+            while True:
+                try:
+                    item = progress_q.get_nowait()
+                    yield json.dumps(item, ensure_ascii=False) + "\n"
+                except queue.Empty:
+                    break
             try:
-                ok, err = await _finish_delivery(db, sender, digest)
-            except Exception as exc:
-                yield json.dumps(
-                    {"type": "error", "step": "send", "message": str(exc) or "카카오 전송에 실패했습니다"},
-                    ensure_ascii=False,
-                ) + "\n"
+                digest = await fut
+            except Exception:
                 return
-            if not ok:
-                yield json.dumps(
-                    {
-                        "type": "error",
-                        "step": "send",
-                        "message": err or digest.error_message or "카카오 전송에 실패했습니다",
-                    },
-                    ensure_ascii=False,
-                ) + "\n"
-                return
-        yield json.dumps(
-            {"type": "done", "digest": _digest_out(digest).model_dump(mode="json")},
-            ensure_ascii=False,
-        ) + "\n"
+            if payload.send:
+                update_activity(activity_id, phase="send")
+                yield json.dumps({"type": "step", "step": "send"}, ensure_ascii=False) + "\n"
+                digest_id = digest.id
+                user_id = user.id
+                db.expire_all()
+                sender = db.scalar(select(User).options(joinedload(User.kakao)).where(User.id == user_id))
+                digest = db.get(Digest, digest_id)
+                if sender is None or digest is None:
+                    yield json.dumps(
+                        {"type": "error", "step": "send", "message": "전송 대상을 다시 불러오지 못했습니다"},
+                        ensure_ascii=False,
+                    ) + "\n"
+                    return
+                try:
+                    ok, err = await _finish_delivery(db, sender, digest)
+                except Exception as exc:
+                    yield json.dumps(
+                        {"type": "error", "step": "send", "message": str(exc) or "카카오 전송에 실패했습니다"},
+                        ensure_ascii=False,
+                    ) + "\n"
+                    return
+                if not ok:
+                    db.refresh(digest)
+                    if digest.status in {"sent", "partial"}:
+                        yield json.dumps(
+                            {"type": "done", "digest": _digest_out(digest).model_dump(mode="json")},
+                            ensure_ascii=False,
+                        ) + "\n"
+                        return
+                    yield json.dumps(
+                        {
+                            "type": "error",
+                            "step": "send",
+                            "message": err or digest.error_message or "카카오 전송에 실패했습니다",
+                        },
+                        ensure_ascii=False,
+                    ) + "\n"
+                    return
+            yield json.dumps(
+                {"type": "done", "digest": _digest_out(digest).model_dump(mode="json")},
+                ensure_ascii=False,
+            ) + "\n"
+        finally:
+            end_activity(activity_id)
 
     return StreamingResponse(
         events(),
@@ -247,6 +273,13 @@ def _stream_digest_send(
             ) + "\n"
             return
         if not ok:
+            db.refresh(digest)
+            if digest.status in {"sent", "partial"}:
+                yield json.dumps(
+                    {"type": "done", "digest": _digest_out(digest).model_dump(mode="json")},
+                    ensure_ascii=False,
+                ) + "\n"
+                return
             yield json.dumps(
                 {
                     "type": "error",

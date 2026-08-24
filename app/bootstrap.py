@@ -101,6 +101,8 @@ def ensure_schema() -> None:
                 conn.execute(text("ALTER TABLE digests ADD COLUMN chunks_sent INTEGER DEFAULT 0"))
             if "miss_notified" not in dig_cols:
                 conn.execute(text("ALTER TABLE digests ADD COLUMN miss_notified BOOLEAN DEFAULT 0"))
+            if "delivery_trace_json" not in dig_cols:
+                conn.execute(text("ALTER TABLE digests ADD COLUMN delivery_trace_json TEXT DEFAULT '[]'"))
 
         kakao_rows = conn.execute(text("PRAGMA table_info(kakao_accounts)")).fetchall()
         if kakao_rows:
@@ -115,6 +117,26 @@ def ensure_schema() -> None:
             note_cols = {row[1] for row in note_rows}
             if "kind" not in note_cols:
                 conn.execute(text("ALTER TABLE sticky_notes ADD COLUMN kind VARCHAR(32) DEFAULT 'suggestion'"))
+
+        usage_rows = conn.execute(text("PRAGMA table_info(llm_usages)")).fetchall()
+        if usage_rows:
+            usage_cols = {row[1] for row in usage_rows}
+            if "ttft_ms" not in usage_cols:
+                conn.execute(text("ALTER TABLE llm_usages ADD COLUMN ttft_ms INTEGER DEFAULT 0"))
+            if "total_ms" not in usage_cols:
+                conn.execute(text("ALTER TABLE llm_usages ADD COLUMN total_ms INTEGER DEFAULT 0"))
+            if "tps" not in usage_cols:
+                conn.execute(text("ALTER TABLE llm_usages ADD COLUMN tps FLOAT DEFAULT 0"))
+            if "streamed" not in usage_cols:
+                conn.execute(text("ALTER TABLE llm_usages ADD COLUMN streamed BOOLEAN DEFAULT 0"))
+            if "faithfulness" not in usage_cols:
+                conn.execute(text("ALTER TABLE llm_usages ADD COLUMN faithfulness FLOAT"))
+            if "hallucination_rate" not in usage_cols:
+                conn.execute(text("ALTER TABLE llm_usages ADD COLUMN hallucination_rate FLOAT"))
+            if "answer_relevance" not in usage_cols:
+                conn.execute(text("ALTER TABLE llm_usages ADD COLUMN answer_relevance FLOAT"))
+            if "context_precision" not in usage_cols:
+                conn.execute(text("ALTER TABLE llm_usages ADD COLUMN context_precision FLOAT"))
 
 
 def _delete_user_by_email(db: Session, email: str) -> None:

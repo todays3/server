@@ -1,10 +1,14 @@
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
+from time import perf_counter
 from typing import Annotated
+import asyncio
 import json
+import queue
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
@@ -18,12 +22,19 @@ from app.schemas import (
     AdminDigestPreviewRequest,
     AdminKakaoTestSendOut,
     AdminKakaoTestSendRequest,
+    AdminLiveActivityOut,
+    AdminLlmTestOut,
     AdminOverview,
+    AdminPipelineFlagsOut,
+    AdminPipelineFlagsUpdate,
     AdminPrefDetail,
     AdminSendScheduleStats,
     AdminSendSlotBucket,
     AdminSendSlotCountBucket,
     AdminRecentCallList,
+    AdminRecentCallDetail,
+    AdminDeliveryTraceStep,
+    AdminPipelineStep,
     AdminStatusUpdate,
     AdminUpdateIn,
     AdminUpdateOut,
@@ -33,6 +44,11 @@ from app.schemas import (
     AdminUsageSummary,
     AdminUserDetail,
     AdminUserOut,
+    PreferenceOut,
+    PreferenceUpdate,
+    ProfileUpdate,
+    RoleSettingsOut,
+    UserOut,
     CrawlRunListOut,
     CrawlRunOut,
     DigestCandidateOut,
@@ -40,14 +56,30 @@ from app.schemas import (
     LatencyLayerOut,
     LatencyListOut,
     LatencyRunOut,
+    LlmQualityListOut,
+    LlmQualityRunOut,
+    QualityStatOut,
     SourceFeedProbeOut,
     SourceProbeListOut,
     SourceSiteProbeOut,
 )
+from app.routers.prefs import MAX_ASSISTANTS_PER_USER, _pref_out, apply_preference_update
+from app.services.roles import parse_role_settings, parse_roles
 from app.services.crawl_log import persist_crawl_run
+from app.services.delivery import deliver_digest
+from app.services.delivery_trace import parse_delivery_trace
 from app.services.digest import build_digest_preview
+from app.services.live_activity import (
+    end_activity,
+    snapshot as live_activity_snapshot,
+    start_activity,
+    update_activity,
+)
+from app.services.pipeline_flags import get_pipeline_flags, set_pipeline_flags
+from app.services import llm as llm_service
+from app.services.llm_quality import percentile_float
 from app.services.run_resources import peak_sampler
-from app.services.kakao import send_digest_via_kakao
+from app.services.kakao import send_digest_via_kakao, split_memo_chunks
 from app.services.fcm import (
     UPDATE_NOTE_KIND,
     UPDATE_NOTE_NICKNAME,
@@ -166,6 +198,7 @@ def _usage_events(db: Session, rows: list[LlmUsage]) -> list[AdminUsageEvent]:
                 delivery_status=_delivery_status(row, digest),
                 attempt_count=int(digest.attempt_count or 0) if digest else 0,
                 error_message=(digest.error_message if digest and digest.error_message else row.error_message),
+                digest_id=digest.id if digest else None,
                 created_at=row.created_at,
             )
         )
@@ -295,6 +328,8 @@ def _pref_detail(pref: Preference | None) -> AdminPrefDetail | None:
         timezone=pref.timezone,
         enabled=pref.enabled,
         insight_questions=bool(pref.insight_questions),
+        roles=parse_roles(pref.roles or ""),
+        role_settings=RoleSettingsOut.model_validate(parse_role_settings(pref.role_settings or "{}")),
     )
 
 
@@ -376,6 +411,208 @@ def admin_overview(
     )
 
 
+@router.get("/live-activity", response_model=AdminLiveActivityOut)
+def admin_live_activity(
+    admin: Annotated[User, Depends(get_admin_user)],
+) -> AdminLiveActivityOut:
+    _ = admin
+    return AdminLiveActivityOut.model_validate(live_activity_snapshot())
+
+
+@router.get("/pipeline-flags", response_model=AdminPipelineFlagsOut)
+def admin_get_pipeline_flags(
+    admin: Annotated[User, Depends(get_admin_user)],
+) -> AdminPipelineFlagsOut:
+    _ = admin
+    return AdminPipelineFlagsOut.model_validate(get_pipeline_flags())
+
+
+@router.patch("/pipeline-flags", response_model=AdminPipelineFlagsOut)
+def admin_patch_pipeline_flags(
+    payload: AdminPipelineFlagsUpdate,
+    admin: Annotated[User, Depends(get_admin_user)],
+) -> AdminPipelineFlagsOut:
+    _ = admin
+    return AdminPipelineFlagsOut.model_validate(
+        set_pipeline_flags(
+            agent_enrichment=payload.agent_enrichment,
+            digest_critique=payload.digest_critique,
+        )
+    )
+
+
+def _find_crawl_run(db: Session, usage: LlmUsage, digest: Digest | None) -> CrawlRun | None:
+    if digest is not None:
+        row = db.scalar(
+            select(CrawlRun).where(CrawlRun.digest_id == digest.id).order_by(CrawlRun.id.desc()).limit(1)
+        )
+        if row is not None:
+            return row
+    u_t = _aware(usage.created_at)
+    if u_t is None:
+        return None
+    return db.scalar(
+        select(CrawlRun)
+        .where(
+            CrawlRun.user_id == usage.user_id,
+            CrawlRun.created_at >= u_t - timedelta(minutes=2),
+            CrawlRun.created_at <= u_t + timedelta(minutes=45),
+        )
+        .order_by(CrawlRun.created_at.desc())
+        .limit(1)
+    )
+
+
+def _pipeline_steps(
+    usage: LlmUsage,
+    crawl_run: CrawlRun | None,
+    digest: Digest | None,
+    *,
+    chunk_total: int,
+) -> list[AdminPipelineStep]:
+    steps: list[AdminPipelineStep] = []
+    if crawl_run is not None:
+        steps.extend(
+            [
+                AdminPipelineStep(
+                    phase="trigger",
+                    label="트리거",
+                    detail=crawl_run.trigger or "",
+                    ms=int(crawl_run.trigger_ms or 0),
+                ),
+                AdminPipelineStep(
+                    phase="crawl",
+                    label="크롤링",
+                    ok=True,
+                    ms=int(crawl_run.crawl_ms or 0),
+                ),
+                AdminPipelineStep(
+                    phase="aggregate",
+                    label="집계",
+                    ok=True,
+                    ms=int(crawl_run.aggregation_ms or 0),
+                ),
+                AdminPipelineStep(
+                    phase="llm",
+                    label="LLM 큐레이션",
+                    ok=usage.success,
+                    detail=crawl_run.llm_skip_reason or crawl_run.curator or "",
+                    ms=int(crawl_run.llm_ms or 0),
+                ),
+                AdminPipelineStep(
+                    phase="format",
+                    label="본문 포맷",
+                    ok=True,
+                    ms=int(crawl_run.format_ms or 0),
+                ),
+            ]
+        )
+    else:
+        steps.append(
+            AdminPipelineStep(
+                phase="llm",
+                label="LLM 호출",
+                ok=usage.success,
+                detail=usage.error_message or usage.purpose,
+            )
+        )
+    if digest is not None:
+        steps.append(
+            AdminPipelineStep(
+                phase="delivery",
+                label="카카오 전송",
+                ok=digest.status in {"sent", "partial"},
+                detail=digest.error_message or digest.status,
+                ms=int(crawl_run.send_ms or 0) if crawl_run else None,
+            )
+        )
+        if chunk_total > 1:
+            steps.append(
+                AdminPipelineStep(
+                    phase="chunks",
+                    label="메모 청크",
+                    ok=digest.status in {"sent", "partial"},
+                    detail=f"{int(digest.chunks_sent or 0)}/{chunk_total}",
+                )
+            )
+    return steps
+
+
+def _recent_call_detail(db: Session, usage: LlmUsage) -> AdminRecentCallDetail:
+    user = db.get(User, usage.user_id)
+    digest_map = _match_digests_for_usages(db, [usage])
+    digest = digest_map.get(usage.id)
+    crawl_run = _find_crawl_run(db, usage, digest)
+    chunk_total = len(split_memo_chunks(digest.title, digest.body)) if digest is not None else 0
+    trace_raw = parse_delivery_trace(getattr(digest, "delivery_trace_json", "") if digest else "")
+    trace = [
+        AdminDeliveryTraceStep(
+            at=str(row.get("at") or ""),
+            step=str(row.get("step") or ""),
+            ok=bool(row.get("ok")),
+            error=str(row.get("error") or ""),
+            chunks_sent=int(row.get("chunks_sent") or 0),
+            chunk_total=int(row.get("chunk_total") or 0),
+            attempt=int(row.get("attempt") or 0),
+            note=str(row.get("note") or ""),
+        )
+        for row in trace_raw
+    ]
+    llm_error = "" if usage.success else (usage.error_message or "LLM 실패")
+    delivery_error = ""
+    if digest is not None and digest.status not in {"sent"}:
+        delivery_error = digest.error_message or digest.status
+    event = AdminUsageEvent(
+        id=usage.id,
+        user_id=usage.user_id,
+        email=user.email if user else "",
+        purpose=usage.purpose,
+        provider=usage.provider,
+        model=usage.model,
+        prompt_tokens=usage.prompt_tokens,
+        completion_tokens=usage.completion_tokens,
+        total_tokens=usage.total_tokens,
+        success=usage.success,
+        error_message=(digest.error_message if digest and digest.error_message else usage.error_message),
+        created_at=usage.created_at,
+        delivery_status=_delivery_status(usage, digest),
+        attempt_count=int(digest.attempt_count or 0) if digest else 0,
+        digest_id=digest.id if digest else None,
+    )
+    body_preview = ""
+    if digest is not None and digest.body:
+        body_preview = digest.body[:480] + ("…" if len(digest.body) > 480 else "")
+    return AdminRecentCallDetail(
+        usage=event,
+        llm_error=llm_error,
+        delivery_error=delivery_error,
+        digest_id=digest.id if digest else None,
+        digest_status=digest.status if digest else "",
+        chunks_sent=int(digest.chunks_sent or 0) if digest else 0,
+        chunk_total=chunk_total,
+        next_retry_at=digest.next_retry_at if digest else None,
+        sent_at=digest.sent_at if digest else None,
+        delivery_trace=trace,
+        pipeline=_pipeline_steps(usage, crawl_run, digest, chunk_total=chunk_total),
+        crawl_run_id=crawl_run.id if crawl_run else None,
+        digest_title=digest.title if digest else "",
+        digest_body_preview=body_preview,
+    )
+
+
+@router.get("/recent-calls/{usage_id}", response_model=AdminRecentCallDetail)
+def get_recent_call_detail(
+    usage_id: int,
+    admin: Annotated[User, Depends(get_admin_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> AdminRecentCallDetail:
+    _ = admin
+    usage = db.get(LlmUsage, usage_id)
+    if usage is None:
+        raise HTTPException(status_code=404, detail="호출 기록을 찾을 수 없습니다")
+    return _recent_call_detail(db, usage)
+
+
 @router.get("/recent-calls", response_model=AdminRecentCallList)
 def list_recent_calls(
     admin: Annotated[User, Depends(get_admin_user)],
@@ -431,6 +668,8 @@ def list_user_details(
                 id=u.id,
                 email=u.email,
                 display_name=u.display_name,
+                occupation=u.occupation or "",
+                birth_date=u.birth_date,
                 status=u.status,
                 is_admin=u.is_admin,
                 kakao_connected=u.kakao is not None and bool(u.kakao.access_token),
@@ -526,6 +765,77 @@ def set_user_status(
     return user
 
 
+def _ensure_member_pref(db: Session, user: User) -> Preference:
+    if user.preference is None:
+        pref = Preference(user_id=user.id)
+        db.add(pref)
+        db.flush()
+        return pref
+    return user.preference
+
+
+def _member_user_out(user: User) -> UserOut:
+    kakao = user.kakao
+    return UserOut(
+        id=user.id,
+        email=user.email,
+        display_name=user.display_name,
+        occupation=user.occupation or "",
+        birth_date=user.birth_date,
+        status=user.status,
+        is_admin=user.is_admin,
+        kakao_connected=kakao is not None and bool(kakao.access_token),
+    )
+
+
+@router.put("/users/{user_id}/prefs", response_model=PreferenceOut)
+def admin_update_user_prefs(
+    user_id: int,
+    payload: PreferenceUpdate,
+    admin: Annotated[User, Depends(get_admin_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> PreferenceOut:
+    _ = admin
+    user = _mutable_member(db, user_id)
+    pref = _ensure_member_pref(db, user)
+    apply_preference_update(pref, payload, role_limit=MAX_ASSISTANTS_PER_USER)
+    db.commit()
+    db.refresh(pref)
+    return _pref_out(pref)
+
+
+@router.delete("/users/{user_id}/prefs", status_code=204)
+def admin_delete_user_prefs(
+    user_id: int,
+    admin: Annotated[User, Depends(get_admin_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Response:
+    _ = admin
+    user = _mutable_member(db, user_id)
+    if user.preference is None:
+        raise HTTPException(status_code=404, detail="설정이 없습니다")
+    db.delete(user.preference)
+    db.commit()
+    return Response(status_code=204)
+
+
+@router.patch("/users/{user_id}/profile", response_model=UserOut)
+def admin_update_user_profile(
+    user_id: int,
+    payload: ProfileUpdate,
+    admin: Annotated[User, Depends(get_admin_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> UserOut:
+    _ = admin
+    user = _mutable_member(db, user_id)
+    user.display_name = payload.display_name
+    user.occupation = (payload.occupation or "").strip()
+    user.birth_date = payload.birth_date
+    db.commit()
+    db.refresh(user)
+    return _member_user_out(user)
+
+
 def _feed_out(feed) -> SourceFeedProbeOut:
     return SourceFeedProbeOut(
         channel=feed.channel,
@@ -592,38 +902,20 @@ def run_one_source_probe(
     return _site_out(probe_site(site_id))
 
 
-@router.post("/digests/preview", response_model=AdminDigestPreviewOut)
-def preview_digest_for_user(
-    payload: AdminDigestPreviewRequest,
-    admin: Annotated[User, Depends(get_admin_user)],
-    db: Annotated[Session, Depends(get_db)],
+def _wants_ndjson(accept: str | None) -> bool:
+    return "application/x-ndjson" in (accept or "").lower()
+
+
+def _admin_preview_out(
+    user: User,
+    preview,
+    *,
+    sent_to_kakao: bool,
+    delivery_status: str,
+    delivery_error: str,
+    digest_id: int | None,
+    send_ms: int,
 ) -> AdminDigestPreviewOut:
-    _ = admin
-    user = db.get(User, payload.user_id)
-    if user is None:
-        raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다")
-    pref = user.preference
-    if pref is None:
-        raise HTTPException(status_code=400, detail="이 사용자에게 설정이 없습니다")
-    with peak_sampler() as peak:
-        preview = build_digest_preview(db, user, pref)
-    persist_crawl_run(
-        db,
-        user,
-        preview.candidates,
-        trigger="admin_preview",
-        trigger_ms=preview.trigger_ms,
-        crawl_ms=preview.crawl_ms,
-        aggregation_ms=preview.aggregation_ms,
-        llm_ms=preview.llm_ms,
-        format_ms=preview.format_ms,
-        curator=preview.curator,
-        llm_skip_reason=preview.llm_skip_reason,
-        cpu_peak_percent=peak.cpu_peak_percent,
-        rss_peak_bytes=peak.rss_peak_bytes,
-        rss_delta_bytes=peak.rss_delta_bytes,
-    )
-    db.commit()
     return AdminDigestPreviewOut(
         user_id=user.id,
         email=user.email,
@@ -646,6 +938,7 @@ def preview_digest_for_user(
                 insight_q=str(item.get("insight_q") or ""),
                 insight_url=str(item.get("insight_url") or ""),
                 why=str(item.get("why") or ""),
+                angle=str(item.get("angle") or ""),
             )
             for item in preview.items
         ],
@@ -660,7 +953,220 @@ def preview_digest_for_user(
             )
             for c in preview.candidates
         ],
-        sent_to_kakao=False,
+        sent_to_kakao=sent_to_kakao,
+        delivery_status=delivery_status,
+        delivery_error=delivery_error,
+        digest_id=digest_id,
+        trigger_ms=preview.trigger_ms,
+        crawl_ms=preview.crawl_ms,
+        aggregation_ms=preview.aggregation_ms,
+        llm_ms=preview.llm_ms,
+        format_ms=preview.format_ms,
+        send_ms=send_ms,
+        kakao_connected=user.kakao is not None and bool(user.kakao.access_token),
+    )
+
+
+@router.post("/digests/preview", response_model=None)
+async def preview_digest_for_user(
+    payload: AdminDigestPreviewRequest,
+    admin: Annotated[User, Depends(get_admin_user)],
+    db: Annotated[Session, Depends(get_db)],
+    accept: Annotated[str | None, Header()] = None,
+):
+    _ = admin
+    user = db.scalar(select(User).options(joinedload(User.kakao)).where(User.id == payload.user_id))
+    if user is None:
+        raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다")
+    pref = user.preference
+    if pref is None:
+        raise HTTPException(status_code=400, detail="이 사용자에게 설정이 없습니다")
+
+    if not _wants_ndjson(accept):
+        with peak_sampler() as peak:
+            preview = build_digest_preview(db, user, pref)
+        digest: Digest | None = None
+        sent_to_kakao = False
+        delivery_status = ""
+        delivery_error = ""
+        send_ms = 0
+        if payload.send_kakao:
+            digest = Digest(
+                user_id=user.id,
+                title=preview.title,
+                body=preview.body,
+                status="preview",
+                delivery_channel="kakao_me",
+                items_json=json.dumps(preview.items, ensure_ascii=False),
+            )
+            db.add(digest)
+            db.flush()
+            send_started = perf_counter()
+            result = await deliver_digest(db, user, digest, wait_ms=0)
+            send_ms = max(0, int((perf_counter() - send_started) * 1000))
+            db.refresh(digest)
+            sent_to_kakao = digest.status in {"sent", "partial"}
+            delivery_status = digest.status
+            delivery_error = "" if digest.status == "sent" else (digest.error_message or result.error)
+        persist_crawl_run(
+            db,
+            user,
+            preview.candidates,
+            trigger="admin_preview_send" if payload.send_kakao else "admin_preview",
+            digest_id=digest.id if digest else None,
+            trigger_ms=preview.trigger_ms,
+            crawl_ms=preview.crawl_ms,
+            aggregation_ms=preview.aggregation_ms,
+            llm_ms=preview.llm_ms,
+            format_ms=preview.format_ms,
+            send_ms=send_ms,
+            curator=preview.curator,
+            llm_skip_reason=preview.llm_skip_reason,
+            cpu_peak_percent=peak.cpu_peak_percent,
+            rss_peak_bytes=peak.rss_peak_bytes,
+            rss_delta_bytes=peak.rss_delta_bytes,
+        )
+        db.commit()
+        return _admin_preview_out(
+            user,
+            preview,
+            sent_to_kakao=sent_to_kakao,
+            delivery_status=delivery_status,
+            delivery_error=delivery_error,
+            digest_id=digest.id if digest else None,
+            send_ms=send_ms,
+        )
+
+    # NDJSON: keep Cloudflare/proxy alive with pings while crawl+LLM run (often >120s).
+    send_kakao = bool(payload.send_kakao)
+    progress_q: queue.Queue[dict[str, object]] = queue.Queue()
+    activity_id = start_activity(
+        kind="admin_preview",
+        label=f"{user.display_name or user.email} · E2E",
+        phase="trigger",
+        detail="admin digests/preview",
+        user_id=user.id,
+        display_name=user.display_name or user.email,
+    )
+
+    def on_progress(step: str) -> None:
+        update_activity(activity_id, phase=step)
+        progress_q.put({"type": "step", "step": step})
+
+    def work_build():
+        try:
+            with peak_sampler() as peak:
+                built = build_digest_preview(db, user, pref, on_progress=on_progress)
+            return built, peak
+        except Exception as exc:
+            progress_q.put(
+                {
+                    "type": "error",
+                    "step": "crawl",
+                    "message": str(exc) or "수집에 실패했습니다",
+                }
+            )
+            raise
+
+    async def events():
+        try:
+            yield json.dumps({"type": "ping"}, ensure_ascii=False) + "\n"
+            yield json.dumps({"type": "step", "step": "trigger"}, ensure_ascii=False) + "\n"
+            loop = asyncio.get_running_loop()
+            fut = loop.run_in_executor(None, work_build)
+            while not fut.done():
+                try:
+                    item = progress_q.get(timeout=0.25)
+                    yield json.dumps(item, ensure_ascii=False) + "\n"
+                except queue.Empty:
+                    yield json.dumps({"type": "ping"}, ensure_ascii=False) + "\n"
+            while True:
+                try:
+                    item = progress_q.get_nowait()
+                    yield json.dumps(item, ensure_ascii=False) + "\n"
+                except queue.Empty:
+                    break
+            try:
+                preview, peak = await fut
+            except Exception:
+                return
+
+            digest: Digest | None = None
+            sent_to_kakao = False
+            delivery_status = ""
+            delivery_error = ""
+            send_ms = 0
+            if send_kakao:
+                update_activity(activity_id, phase="send", detail="카카오 전송")
+                yield json.dumps({"type": "step", "step": "send"}, ensure_ascii=False) + "\n"
+                digest = Digest(
+                    user_id=user.id,
+                    title=preview.title,
+                    body=preview.body,
+                    status="preview",
+                    delivery_channel="kakao_me",
+                    items_json=json.dumps(preview.items, ensure_ascii=False),
+                )
+                db.add(digest)
+                db.flush()
+                send_started = perf_counter()
+                try:
+                    result = await deliver_digest(db, user, digest, wait_ms=0)
+                except Exception as exc:
+                    yield json.dumps(
+                        {
+                            "type": "error",
+                            "step": "send",
+                            "message": str(exc) or "카카오 전송에 실패했습니다",
+                        },
+                        ensure_ascii=False,
+                    ) + "\n"
+                    return
+                send_ms = max(0, int((perf_counter() - send_started) * 1000))
+                db.refresh(digest)
+                sent_to_kakao = digest.status in {"sent", "partial"}
+                delivery_status = digest.status
+                delivery_error = "" if digest.status == "sent" else (digest.error_message or result.error)
+
+            persist_crawl_run(
+                db,
+                user,
+                preview.candidates,
+                trigger="admin_preview_send" if send_kakao else "admin_preview",
+                digest_id=digest.id if digest else None,
+                trigger_ms=preview.trigger_ms,
+                crawl_ms=preview.crawl_ms,
+                aggregation_ms=preview.aggregation_ms,
+                llm_ms=preview.llm_ms,
+                format_ms=preview.format_ms,
+                send_ms=send_ms,
+                curator=preview.curator,
+                llm_skip_reason=preview.llm_skip_reason,
+                cpu_peak_percent=peak.cpu_peak_percent,
+                rss_peak_bytes=peak.rss_peak_bytes,
+                rss_delta_bytes=peak.rss_delta_bytes,
+            )
+            db.commit()
+            out = _admin_preview_out(
+                user,
+                preview,
+                sent_to_kakao=sent_to_kakao,
+                delivery_status=delivery_status,
+                delivery_error=delivery_error,
+                digest_id=digest.id if digest else None,
+                send_ms=send_ms,
+            )
+            yield json.dumps(
+                {"type": "done", "preview": out.model_dump(mode="json")},
+                ensure_ascii=False,
+            ) + "\n"
+        finally:
+            end_activity(activity_id)
+
+    return StreamingResponse(
+        events(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
@@ -719,6 +1225,118 @@ async def kakao_test_send(
         push_devices=push_devices,
         push_sent=push_sent,
         push_error=push_error,
+    )
+
+
+_LLM_PING_MESSAGES = [
+    {"role": "system", "content": "Reply with the single word pong and nothing else."},
+    {"role": "user", "content": "ping"},
+]
+
+
+@router.post("/llm/test", response_model=AdminLlmTestOut)
+def llm_test(
+    admin: Annotated[User, Depends(get_admin_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> AdminLlmTestOut:
+    settings = get_settings()
+    base = AdminLlmTestOut(
+        ok=False,
+        configured=settings.llm_configured,
+        provider=settings.llm_provider,
+        local_ready=settings.llm_local_ready,
+        remote_ready=settings.remote_llm_ready,
+    )
+    if not settings.llm_configured:
+        base.error_message = "LLM이 설정되지 않았습니다"
+        return base
+
+    started = perf_counter()
+    text, usage = llm_service.chat_completion(
+        db,
+        user_id=admin.id,
+        purpose="admin_llm_ping",
+        messages=_LLM_PING_MESSAGES,
+        temperature=0,
+        max_tokens=32,
+    )
+    db.commit()
+    preview = (text or "").strip()[:120]
+    error = ""
+    if usage is not None and not usage.success:
+        error = usage.error_message or "LLM 실패"
+    elif not preview:
+        error = "빈 응답"
+    used = str(getattr(usage, "provider", "") or "")
+    return AdminLlmTestOut(
+        ok=bool(preview),
+        configured=True,
+        provider=settings.llm_provider,
+        used_provider=used,
+        model=str(getattr(usage, "model", "") or ""),
+        ms=int((perf_counter() - started) * 1000),
+        preview=preview,
+        error_message=error,
+        local_ready=settings.llm_local_ready,
+        remote_ready=settings.remote_llm_ready,
+        fallback=bool(settings.llm_local_ready and used == "groq"),
+    )
+
+
+def _quality_stat(values: list[float]) -> QualityStatOut:
+    if not values:
+        return QualityStatOut()
+    return QualityStatOut(
+        p50=round(percentile_float(values, 50), 3),
+        p90=round(percentile_float(values, 90), 3),
+        p95=round(percentile_float(values, 95), 3),
+        mean=round(sum(values) / len(values), 3),
+    )
+
+
+@router.get("/llm-quality", response_model=LlmQualityListOut)
+def list_llm_quality(
+    admin: Annotated[User, Depends(get_admin_user)],
+    db: Annotated[Session, Depends(get_db)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 80,
+) -> LlmQualityListOut:
+    _ = admin
+    rows = list(db.scalars(select(LlmUsage).order_by(LlmUsage.created_at.desc()).limit(limit)).all())
+    ttft = [float(row.ttft_ms or 0) for row in rows if (row.ttft_ms or 0) > 0 or (row.total_ms or 0) > 0]
+    tps = [float(row.tps or 0) for row in rows if (row.tps or 0) > 0]
+    hallu = [float(row.hallucination_rate) for row in rows if row.hallucination_rate is not None]
+    faith = [float(row.faithfulness) for row in rows if row.faithfulness is not None]
+    rel = [float(row.answer_relevance) for row in rows if row.answer_relevance is not None]
+    prec = [float(row.context_precision) for row in rows if row.context_precision is not None]
+    runs = [
+        LlmQualityRunOut(
+            id=row.id,
+            created_at=row.created_at,
+            purpose=row.purpose or "",
+            provider=row.provider or "",
+            model=row.model or "",
+            success=bool(row.success),
+            ttft_ms=int(row.ttft_ms or 0),
+            total_ms=int(row.total_ms or 0),
+            tps=float(row.tps or 0),
+            streamed=bool(row.streamed),
+            faithfulness=row.faithfulness,
+            hallucination_rate=row.hallucination_rate,
+            answer_relevance=row.answer_relevance,
+            context_precision=row.context_precision,
+        )
+        for row in rows
+    ]
+    return LlmQualityListOut(
+        sample_size=len(rows),
+        rag_sample_size=len(hallu),
+        ttft=_quality_stat(ttft),
+        tps=_quality_stat(tps),
+        hallucination_rate=_quality_stat(hallu),
+        faithfulness=_quality_stat(faith),
+        answer_relevance=_quality_stat(rel),
+        context_precision=_quality_stat(prec),
+        runs=runs,
     )
 
 
