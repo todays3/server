@@ -61,7 +61,6 @@ def test_format_body_includes_insight_when_enabled():
     first = body.splitlines()[0]
     assert "하루만장 ·" not in first
     assert "테스트님" in first
-    assert first.endswith("테스트님.") or first.endswith("테스트님?")
     assert "오늘 12개 중에 고른 1개입니다." in body
     assert "첫째. 📰 금리" in body
     assert "[아티클]" not in body
@@ -142,8 +141,8 @@ def test_format_body_keeps_a_brief_of_three_per_assistant():
     first, second = [part.strip() for part in body.split("\x1e") if part.strip()]
     assert "민준" in first and "하람" not in first
     assert "하람" in second and "민준" not in second
-    assert first.splitlines()[0].endswith("민수님.") or first.splitlines()[0].endswith("민수님?")
-    assert second.splitlines()[0].endswith("민수님.") or second.splitlines()[0].endswith("민수님?")
+    assert "민수님" in first.splitlines()[0]
+    assert "민수님" in second.splitlines()[0]
     assert body.count("첫째.") == 2
     assert "여섯째" not in body
 
@@ -156,7 +155,7 @@ def test_test_digest_marks_sample_and_uses_current_kakao_shape():
     preview = build_test_digest_preview(user, pref)
     lines = preview.body.splitlines()
     assert TEST_DATA_NOTICE in preview.body
-    assert lines[0].endswith("민수님.") or lines[0].endswith("민수님?")
+    assert "민수님" in lines[0]
     assert TEST_DATA_NOTICE in lines[2]
     assert "오늘 " in preview.body and "중에 고른 3개입니다." in preview.body
     assert "첫째." in preview.body

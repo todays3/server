@@ -24,6 +24,7 @@ from app.services.pipeline_timing import elapsed_ms
 from app.services.run_resources import peak_sampler
 from app.services.greeting import digest_opening_line
 from app.services.kakao import ASSISTANT_MEMO_BREAK
+from app.services.financial_change import ai_change_comment, format_change_summary, load_financial_change
 from app.services.pick_reason import KIND_WHY, clip_why, compose_pick_reason
 from app.services.shortlist import shortlist_for_llm, topic_tokens
 from app.services.sources import SourceItem, candidates_as_prompt_block, gather_candidates
@@ -552,6 +553,12 @@ def _format_match_stock_lines(item: dict[str, str]) -> list[str]:
     blurb = _lead_sentence(item.get("blurb") or "")
     if blurb:
         lines.append(blurb)
+    financial_change = (item.get("financial_change") or "").strip()
+    financial_analysis = (item.get("financial_analysis") or "").strip()
+    if financial_change:
+        lines.append(financial_change)
+        if financial_analysis:
+            lines.append(f"도윤의 해석: {financial_analysis}")
     url = (item.get("url") or "").strip()
     if url:
         lines.append(f"재무제표: {url}")
@@ -1309,6 +1316,21 @@ def _curate_stock_pick(
     if not picked:
         picked = heuristic_match_stock(_candidate_dicts(candidates), market=market)
         curator = "heuristic"
+    if picked:
+        try:
+            change = load_financial_change(picked.get("ticker") or "")
+            if change is None:
+                picked["financial_change"] = "재무 변화: 비교 재무 데이터가 없습니다."
+            else:
+                picked["financial_change"] = format_change_summary(change)
+                picked["financial_analysis"], analysis_ms = ai_change_comment(
+                    db,
+                    user_id=user.id,
+                    change=change,
+                )
+                timings["llm_ms"] = int(timings.get("llm_ms") or 0) + analysis_ms
+        except Exception:
+            picked["financial_change"] = "재무 변화: 비교 재무 데이터를 확인하지 못했습니다."
     return [picked], "", curator, skip_reason, llm_raw
 
 

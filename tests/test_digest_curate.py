@@ -685,6 +685,7 @@ def test_build_digest_preview_stock_analyst_sends_one_stock_no_articles(db_sessi
     assert "첫째" not in preview.body
     assert "오늘 시장에서 종목 1개를 골랐습니다" in preview.body
     assert "매수 추천이 아닙니다" in preview.body
+    assert "재무 변화: 비교 재무 데이터가 없습니다." in preview.body
 
 
 def test_filter_candidates_for_role_respects_mega_and_user_sources():
