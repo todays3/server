@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.auth import get_current_user
 from app.db import get_db
-from app.models import Digest, User
-from app.schemas import DigestItemOut, DigestOut, PreviewRequest
+from app.models import CrawlRun, Digest, User
+from app.schemas import DigestCrawlItemOut, DigestItemOut, DigestOut, PreviewRequest
 from app.services.delivery import deliver_digest
 from app.services.digest import create_digest, create_test_digest
 from app.routers.prefs import _ensure_pref
@@ -20,7 +20,7 @@ from app.services.live_activity import end_activity, start_activity, update_acti
 router = APIRouter(prefix="/digests", tags=["digests"])
 
 
-def _digest_out(digest: Digest) -> DigestOut:
+def _digest_out(digest: Digest, crawl_run: CrawlRun | None = None) -> DigestOut:
     raw_items: list[DigestItemOut] = []
     try:
         parsed = json.loads(digest.items_json or "[]")
@@ -43,6 +43,33 @@ def _digest_out(digest: Digest) -> DigestOut:
                 )
     except json.JSONDecodeError:
         raw_items = []
+    crawl_items: list[DigestCrawlItemOut] = []
+    crawl_kinds: dict[str, int] = {}
+    if crawl_run is not None:
+        try:
+            parsed_crawl = json.loads(crawl_run.crawled_items_json or "[]")
+            if isinstance(parsed_crawl, list):
+                crawl_items = [
+                    DigestCrawlItemOut(
+                        kind=str(row.get("kind") or "아티클"),
+                        title=str(row.get("title") or ""),
+                        source=str(row.get("source") or ""),
+                        site_id=str(row.get("site_id") or ""),
+                        url=str(row.get("url") or ""),
+                    )
+                    for row in parsed_crawl
+                    if isinstance(row, dict)
+                ]
+            parsed_kinds = json.loads(crawl_run.kinds_json or "{}")
+            if isinstance(parsed_kinds, dict):
+                crawl_kinds = {
+                    str(key): max(0, int(value))
+                    for key, value in parsed_kinds.items()
+                    if isinstance(value, (int, float))
+                }
+        except (TypeError, ValueError, json.JSONDecodeError):
+            crawl_items = []
+            crawl_kinds = {}
     return DigestOut(
         id=digest.id,
         title=digest.title,
@@ -57,6 +84,10 @@ def _digest_out(digest: Digest) -> DigestOut:
         chunks_sent=int(digest.chunks_sent or 0),
         can_resend=digest.status in {"failed", "sending", "partial"},
         items=raw_items,
+        crawl_recorded=crawl_run is not None,
+        crawled_total=int(crawl_run.total_count or 0) if crawl_run is not None else 0,
+        crawled_kinds=crawl_kinds,
+        crawled_items=crawl_items,
     )
 
 
@@ -86,7 +117,18 @@ def list_digests(
             select(Digest).where(Digest.user_id == user.id).order_by(Digest.created_at.desc()).limit(30)
         ).all()
     )
-    return [_digest_out(d) for d in rows]
+    digest_ids = [digest.id for digest in rows]
+    crawl_by_digest: dict[int, CrawlRun] = {}
+    if digest_ids:
+        crawl_rows = db.scalars(
+            select(CrawlRun)
+            .where(CrawlRun.digest_id.in_(digest_ids))
+            .order_by(CrawlRun.id.desc())
+        ).all()
+        for row in crawl_rows:
+            if row.digest_id is not None and row.digest_id not in crawl_by_digest:
+                crawl_by_digest[row.digest_id] = row
+    return [_digest_out(d, crawl_by_digest.get(d.id)) for d in rows]
 
 
 @router.post("/preview", response_model=None)

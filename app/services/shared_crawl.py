@@ -92,6 +92,4 @@ def slice_shared_items(
         return items[:max_items]
     wanted = set(sites)
     picked = [item for item in items if item.site_id and item.site_id in wanted]
-    if not picked:
-        return items[:max_items]
     return picked[:max_items]

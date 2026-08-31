@@ -575,6 +575,8 @@ def _split_articles_and_stock(section: list[dict[str, str]]) -> tuple[list[dict[
 def _section_intro(articles: list[dict[str, str]], stocks: list[dict[str, str]], reviewed_count: int, *, empty_picked_min: int) -> str:
     if stocks and not articles:
         return "오늘 시장에서 종목 1개를 골랐습니다. 매수 추천이 아닙니다."
+    if not articles and not stocks:
+        return "오늘 조건에 맞는 자료를 찾지 못했습니다."
     picked = len(articles) if articles else empty_picked_min
     return f"오늘 {reviewed_count}개 중에 고른 {picked}개입니다."
 
@@ -794,9 +796,44 @@ def _summary_blurb(item: SourceItem) -> str:
     return f"{item.title}. {item.source}에서 가져온 핵심만 짧게 남겼습니다."[:220]
 
 
-def _static_fallback(topics: list[str], seed: str, *, offset: int = 0, count: int = 3) -> list[dict[str, str]]:
-    start = (int(hashlib.sha256(seed.encode()).hexdigest()[:8], 16) + offset) % len(_CURATED)
-    ordered = _CURATED[start:] + _CURATED[:start]
+_ROLE_TEST_CURATED: dict[str, list[dict[str, str]]] = {
+    "semiconductor": [
+        {
+            "kind": "아티클",
+            "title": "HBM 패키징과 고대역폭 메모리 동향",
+            "blurb": "메모리 적층과 패키징 기술이 대역폭과 수율에 미치는 영향을 짚습니다.",
+            "url": "https://www.iedm.org/",
+            "hint": "반도체",
+        },
+        {
+            "kind": "아티클",
+            "title": "GAA 공정의 전력·성능·수율 균형",
+            "blurb": "게이트올어라운드 구조에서 전력과 수율을 함께 보는 기준을 정리합니다.",
+            "url": "https://www.spie.org/",
+            "hint": "반도체",
+        },
+        {
+            "kind": "아티클",
+            "title": "첨단 노드 검증에서 보는 변동성",
+            "blurb": "미세 공정 검증에서 공정 편차와 설계 여유를 함께 확인하는 관점입니다.",
+            "url": "https://ieeexplore.ieee.org/",
+            "hint": "반도체",
+        },
+    ],
+}
+
+
+def _static_fallback(
+    topics: list[str],
+    seed: str,
+    *,
+    offset: int = 0,
+    count: int = 3,
+    role: str | None = None,
+) -> list[dict[str, str]]:
+    curated = _ROLE_TEST_CURATED.get(role or "", _CURATED)
+    start = (int(hashlib.sha256(seed.encode()).hexdigest()[:8], 16) + offset) % len(curated)
+    ordered = curated[start:] + curated[:start]
     return [
         {
             "kind": x["kind"],
@@ -1189,7 +1226,10 @@ def _curate_three(
         return items, title, "llm", "", llm_raw
     picked = _heuristic_pick(candidates, seed)
     curator = "heuristic" if picked else "static"
-    labeled = _label_picked_items(picked or _static_fallback(topics, seed), pref, pool, topics, role=role)
+    if role and not picked:
+        return [], "", curator, skip_reason, llm_raw
+    fallback = picked or _static_fallback(topics, seed, role=role)
+    labeled = _label_picked_items(fallback, pref, pool, topics, role=role)
     return labeled, "", curator, skip_reason, llm_raw
 
 
@@ -1534,7 +1574,7 @@ def build_test_digest_preview(
         for index, role in enumerate(roles):
             batch = _role_send_items(
                 _label_picked_items(
-                    _static_fallback(topics, f"{seed}:{role}", offset=index * 3),
+                    _static_fallback(topics, f"{seed}:{role}", offset=index * 3, role=role),
                     pref,
                     [],
                     topics,
@@ -1553,7 +1593,7 @@ def build_test_digest_preview(
         role = roles[0] if roles else None
         items = _role_send_items(
             _label_picked_items(
-                _static_fallback(topics, seed),
+                _static_fallback(topics, seed, role=role),
                 pref,
                 [],
                 topics,

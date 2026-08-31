@@ -14,6 +14,7 @@ from app.services.pipeline_timing import total_ms as sum_total_ms
 from app.services.sources import SourceItem
 
 CANONICAL_KINDS = ("아티클", "유튜브", "커뮤니티")
+CRAWL_SAMPLE_LIMIT = 12
 
 
 def kind_counts(candidates: Iterable[SourceItem]) -> dict[str, int]:
@@ -47,7 +48,19 @@ def persist_crawl_run(
     rss_peak_bytes: int = 0,
     rss_delta_bytes: int = 0,
 ) -> CrawlRun:
-    kinds = kind_counts(candidates)
+    candidate_rows = list(candidates)
+    kinds = kind_counts(candidate_rows)
+    sample = [
+        {
+            "kind": (item.kind or "아티클").strip() or "아티클",
+            "title": (item.title or "").strip()[:180],
+            "source": (item.source or "").strip()[:80],
+            "site_id": (item.site_id or "").strip()[:80],
+            "url": (item.url or "").strip()[:500],
+        }
+        for item in candidate_rows[:CRAWL_SAMPLE_LIMIT]
+        if (item.title or "").strip() or (item.url or "").strip()
+    ]
     row = CrawlRun(
         user_id=user.id,
         digest_id=digest_id,
@@ -69,6 +82,7 @@ def persist_crawl_run(
         cpu_peak_percent=max(0, int(cpu_peak_percent)),
         rss_peak_bytes=max(0, int(rss_peak_bytes)),
         rss_delta_bytes=max(0, int(rss_delta_bytes)),
+        crawled_items_json=json.dumps(sample, ensure_ascii=False),
     )
     row.total_ms = sum_total_ms(row)
     db.add(row)

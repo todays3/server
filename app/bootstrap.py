@@ -77,6 +77,8 @@ def ensure_schema() -> None:
             for col in int_cols:
                 if col not in crawl_cols:
                     conn.execute(text(f"ALTER TABLE crawl_runs ADD COLUMN {col} INTEGER DEFAULT 0"))
+            if "crawled_items_json" not in crawl_cols:
+                conn.execute(text("ALTER TABLE crawl_runs ADD COLUMN crawled_items_json TEXT DEFAULT '[]'"))
             if "curator" not in crawl_cols:
                 conn.execute(text("ALTER TABLE crawl_runs ADD COLUMN curator VARCHAR(32) DEFAULT ''"))
             if "llm_skip_reason" not in crawl_cols:

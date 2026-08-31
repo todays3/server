@@ -673,6 +673,7 @@ def test_build_digest_preview_stock_analyst_sends_one_stock_no_articles(db_sessi
         ),
     ]
     monkeypatch.setattr("app.services.digest.gather_candidates", lambda *a, **k: pool)
+    monkeypatch.setattr("app.services.digest.load_financial_change", lambda *_a, **_k: None)
     monkeypatch.setenv("LLM_API_KEY", "")
     get_settings.cache_clear()
     try:
@@ -686,6 +687,42 @@ def test_build_digest_preview_stock_analyst_sends_one_stock_no_articles(db_sessi
     assert "오늘 시장에서 종목 1개를 골랐습니다" in preview.body
     assert "매수 추천이 아닙니다" in preview.body
     assert "재무 변화: 비교 재무 데이터가 없습니다." in preview.body
+
+
+def test_semiconductor_empty_pool_does_not_use_generic_static_fallback(db_session, monkeypatch):
+    user = _approved_user(db_session, "semi-empty@example.com")
+    pref = Preference(
+        user_id=user.id,
+        topics="반도체/기술동향/all",
+        roles="semiconductor",
+        timezone="Asia/Seoul",
+        role_settings='{"assistant_names":{"semiconductor":"하늘"}}',
+        sources="",
+    )
+    db_session.add(pref)
+    db_session.commit()
+    monkeypatch.setattr(
+        "app.services.digest.gather_candidates",
+        lambda *a, **k: [
+            SourceItem(
+                kind="아티클",
+                title="환율·물가 한 장 브리핑",
+                url="https://wrong.example",
+                summary="경제 시황",
+                source="시황",
+            )
+        ],
+    )
+    monkeypatch.setenv("LLM_API_KEY", "")
+    get_settings.cache_clear()
+    try:
+        preview = build_digest_preview(db_session, user, pref)
+    finally:
+        get_settings.cache_clear()
+
+    assert "환율·물가 한 장 브리핑" not in preview.body
+    assert "React 19" not in preview.body
+    assert "오늘 조건에 맞는 자료를 찾지 못했습니다." in preview.body
 
 
 def test_filter_candidates_for_role_respects_mega_and_user_sources():

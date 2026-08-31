@@ -118,6 +118,8 @@ class CrawlRun(Base):
     cpu_peak_percent: Mapped[int] = mapped_column(Integer, default=0)
     rss_peak_bytes: Mapped[int] = mapped_column(Integer, default=0)
     rss_delta_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    # Small title/source sample for the user's briefing history; raw article bodies are not stored.
+    crawled_items_json: Mapped[str] = mapped_column(Text, default="[]")
     curator: Mapped[str] = mapped_column(String(32), default="")
     llm_skip_reason: Mapped[str] = mapped_column(String(64), default="")
     ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

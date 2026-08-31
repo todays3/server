@@ -257,13 +257,13 @@ def topic_site_ids_for_topics(topics: Iterable[str]) -> set[str]:
 
 
 def stamp_for_topics(topics: list[str]) -> str:
-    """Synthetic site_id so shared-crawl slices stay mega-scoped."""
+    """Stamp a single-mega crawl; mixed shared crawls stay untagged for domain filtering."""
     megas: list[str] = []
     for tag in topics:
         mega = tag.split("/")[0].strip() if tag else ""
         if mega and mega not in megas:
             megas.append(mega)
-    if not megas:
+    if len(megas) != 1:
         return ""
     return topic_site_id(megas[0])
 

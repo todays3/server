@@ -248,6 +248,14 @@ class DigestItemOut(BaseModel):
     angle: str = ""
 
 
+class DigestCrawlItemOut(BaseModel):
+    kind: str
+    title: str
+    source: str = ""
+    site_id: str = ""
+    url: str = ""
+
+
 class DigestOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -264,6 +272,10 @@ class DigestOut(BaseModel):
     chunks_sent: int = 0
     can_resend: bool = False
     items: list[DigestItemOut] = Field(default_factory=list)
+    crawl_recorded: bool = False
+    crawled_total: int = 0
+    crawled_kinds: dict[str, int] = Field(default_factory=dict)
+    crawled_items: list[DigestCrawlItemOut] = Field(default_factory=list)
 
 
 class PreviewRequest(BaseModel):
